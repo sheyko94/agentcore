@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentcore-chat"
+version = "0.1.0"
+description = "Minimal conversational agent for testing AgentCore Runtime"
+requires-python = ">=3.12"
+dependencies = [
+  "boto3>=1.43.104,<2",
+  "bedrock-agentcore>=1,<2",
+  "python-dotenv>=1.2,<2",
+]
+
+[project.scripts]
+chat = "agent.cli:main"
+chat-runtime = "agent.runtime:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent"]
