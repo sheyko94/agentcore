@@ -8,8 +8,8 @@ The user's current instructions take precedence.
 
 Experiment with Amazon Bedrock AgentCore using a minimal text conversation:
 the user asks, the agent replies, and follow-ups reuse short-term agent memory.
-Keep the implementation small. No tools, RAG, UI, summaries, persistent memory
-service, or new voice work is needed unless the user changes the scope.
+Keep the implementation small. No tools, RAG, UI, summaries, long-term memory
+strategies, or new voice work is needed unless the user changes the scope.
 
 The active project is `chat/`. The preserved voice prototype is local-only in
 `voice/`, ignored by Git and excluded from pushes. If present, read its local
@@ -19,11 +19,13 @@ unless the user explicitly resumes that project and asks to track it.
 ## Layout and entry points
 
 - `chat/src/agent/agent.py`: boto3 Bedrock Converse call and one conversation's
-  message list. Commit a turn only after a valid text reply.
+  retrieved history. Save a turn only after a valid text reply.
+- `chat/src/agent/memory.py`: AgentCore short-term event reads/writes; paginate
+  history and store each user/assistant pair in one event.
 - `chat/src/agent/cli.py`: local terminal UI calling the deployed AgentCore
   `DEFAULT` endpoint, with `/new`, `/exit`, and remote session cleanup.
 - `chat/src/agent/runtime.py`: `BedrockAgentCoreApp`, conversations keyed by
-  session ID, and a global lock serializing invocations.
+  session ID passed to memory, and a process lock serializing invocations.
 - `chat/pyproject.toml`: distribution `agentcore-chat`, Python package `agent`,
   console scripts `chat = agent.cli:main` and `chat-runtime = agent.runtime:main`.
 - `chat/Dockerfile`: ARM64 runtime container, port 8080, installed `chat-runtime`.
@@ -52,7 +54,8 @@ Inside `chat/`, use `uv run chat` or `uv run chat-runtime`.
 The user supplies configuration; use direct `os.environ` reads without defaults,
 custom environment validation, or CLI overrides. The local CLI reads
 `AWS_PROFILE`, `AWS_REGION`, and `AGENTCORE_RUNTIME_ARN`. The runtime reads
-`AWS_REGION` and `CHAT_MODEL`; a local copy of CHAT_MODEL is not sent by the CLI.
+`AWS_REGION`, `CHAT_MODEL`, `AGENTCORE_MEMORY_ID`, and `CHAT_ACTOR_ID`; these
+runtime settings are not sent by the CLI.
 Local `.env` files load from the working directory without overriding shell
 variables. `chat/.env.example` has example values, not application defaults.
 
@@ -67,11 +70,22 @@ The CLI starts with a fresh UUID, reuses it for follow-ups, and creates a new ID
 for `/new`. It attempts to stop invoked sessions on reset/exit and closes response
 bodies. Failed cleanup can leave a session running until timeout.
 
-Agent memory is an in-process message list, not the AgentCore Memory service.
-Stopping/restarting/expiring runtime compute loses it. The runtime isolates local
-HTTP sessions by session ID. There is no history trimming, transcript export,
-or application persistence; CloudWatch logs can still contain invocation text.
+AgentCore Memory events persist independently of runtime compute, scoped by
+resource, configured actor, and session ID. `/session` displays the UUID and
+`/resume <UUID>` selects saved history; `/new` does not erase prior events.
+This is a single-user prototype, not per-user authorization. Use one caller per
+conversation; a process lock does not provide distributed serialization.
+No long-term strategies or RAM fallback. Failed inference writes nothing;
+memory errors surface. Unknown write outcomes or lost responses can leave a
+saved turn the caller did not see, and user retries can duplicate turns.
+There is no history trimming or transcript export; CloudWatch can contain text.
+Deleting runtime compute does not delete the separate Memory resource.
 Keep application logging concise and avoid adding secret or payload dumps.
+`uv run chat` appends request/SDK and session-cleanup exceptions to `error.log`
+in the current working directory, with timestamps, session IDs, and tracebacks.
+Log files are ignored by Git. Keep the normal CLI as the user's entry point;
+do not redirect CLI error logging work into a local HTTP debugging workflow.
+A generic AWS 500 cannot expose a server exception the SDK did not return.
 
 ## Verification and maintenance
 
@@ -79,6 +93,11 @@ Automated test files remain deferred unless requested. Use focused offline
 checks for configuration wiring, multi-turn memory, failed-turn behavior,
 session reset/isolation, and cleanup. Do not mistake imports or local HTTP
 checks for a verified deployment. Report live AWS verification separately.
+
+The test runtime, chat ECR repository, and related CloudWatch log groups in
+`eu-west-1` were deleted and confirmed absent on 2026-10-01. The CLI needs a new
+deployment and runtime ARN before another hosted chat. Do not redeploy unless
+the user requests it.
 
 Hosted reply/memory/isolation checks passed on 2026-10-01 before the package
 rename from `agentcore_chat` to `agent`; local entry points were verified after

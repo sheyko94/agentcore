@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 from .agent import Chat
 
 app = BedrockAgentCoreApp()
-conversations = {}
 lock = threading.Lock()
 
 
@@ -18,11 +17,8 @@ def invoke(payload, context):
         raise ValueError("prompt must be a non-empty string")
     if not context.session_id:
         raise ValueError("A runtime session ID is required for conversation memory.")
-    # Also isolate sessions when testing multiple sessions in one local server.
     with lock:
-        if context.session_id not in conversations:
-            conversations[context.session_id] = Chat()
-        return {"reply": conversations[context.session_id].ask(prompt)}
+        return {"reply": Chat().ask(prompt, context.session_id)}
 
 
 def main():

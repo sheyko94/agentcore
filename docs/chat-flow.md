@@ -12,7 +12,7 @@ sequenceDiagram
     end
     box rgb(255, 245, 225) AWS Cloud
         participant Runtime as AgentCore Runtime
-        participant Memory as Agent memory
+        participant Memory as Agent memory (AgentCore Memory)
         participant Model as Inference model (Bedrock Nova Lite)
     end
 
@@ -30,7 +30,12 @@ sequenceDiagram
 
     You->>CLI: /new or /exit
     CLI->>Runtime: Stop the session
-    Note over Runtime,Memory: Stopping the session discards its memory
+    Note over Runtime,Memory: Compute stops; saved events remain until retention expires
+
+    You->>CLI: /resume saved-session-ID, then a message
+    CLI->>Runtime: Message + saved session ID
+    Runtime->>Memory: Load saved conversation for actor + session
+    Memory-->>Runtime: History survives compute restart
 ```
 
 The first message starts a session with empty history. Follow-up messages reuse
@@ -38,6 +43,9 @@ the same session ID. `/new` stops the previous session and creates a fresh ID;
 `/exit` stops the session and quits. Cleanup is attempted only after an invocation
 and is best-effort: if stopping fails, the runtime may remain until it expires.
 
-Agent memory is held in RAM and lasts only for the current session: a runtime
-restart or session expiration loses it. Nothing is saved to a database, and the
-separate AgentCore Memory service is not used.
+AgentCore Memory stores short-term conversation events separately from compute.
+The runtime reads saved history before inference and saves each successful turn
+as one event before returning the reply. `/session` shows the ID; `/resume <ID>`
+selects a saved conversation for the configured actor. `/new` does not delete
+older conversations. Events expire according to resource retention; deleting the
+Memory resource removes its data. No long-term memory strategies are used.

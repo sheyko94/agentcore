@@ -42,8 +42,8 @@ From the repository root, the equivalent command is
 Bedrock mode. It reads `.env` from its working directory without overriding
 existing shell variables. `AWS_REGION` must match your runtime's region.
 
-`CHAT_MODEL` and the Bedrock `AWS_REGION` must be configured separately on the
-hosted runtime. Local `.env` values are not forwarded to AWS. See
+`CHAT_MODEL`, `AWS_REGION`, `AGENTCORE_MEMORY_ID`, and `CHAT_ACTOR_ID` must be
+configured separately on the hosted runtime. Local `.env` values are not forwarded to AWS. See
 [chat setup and deployment](chat/README.md) for the configuration table,
 permissions, local HTTP checks, and Docker/ECR deployment steps.
 
@@ -54,13 +54,18 @@ agent memory. `/new` starts a fresh conversation; `/exit`, Ctrl+C, or EOF quits.
 The CLI attempts to stop an invoked session on reset or exit. If cleanup fails,
 the old session can remain until its configured timeout.
 
-Agent memory is held in RAM and disappears when the runtime process stops or
-expires. There is no automatic history trimming, persistence service, or
-AgentCore Memory resource. Very long conversations can exceed the inference
+AgentCore Memory stores short-term conversation events beyond compute shutdown.
+Use `/session` to get the UUID and `/resume <UUID>` to restore that conversation.
+`/new` selects empty history without deleting older events. There is no automatic
+history trimming or long-term memory strategy. Very long conversations can exceed the inference
 model's context window. The CLI writes no transcript files; CloudWatch logs can
 still contain invocation payloads and errors. AWS calls incur normal charges.
 
 ## Status and development
+
+The test runtime, `agentcore-chat` ECR repository, and related CloudWatch log
+groups in `eu-west-1` were deleted on 2026-10-01. AWS checks confirmed their
+absence. Deploy a new runtime before using the CLI again.
 
 A deployed container runtime in `eu-west-1` passed reply, follow-up memory, and
 fresh-session isolation checks on 2026-10-01. That check preceded the package

@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 import json
+import logging
 import os
 from pathlib import Path
 import sys
@@ -7,6 +8,9 @@ import uuid
 
 import boto3
 from dotenv import load_dotenv
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -50,7 +54,8 @@ def stop_session(conversation):
             qualifier="DEFAULT",
         )
     except Exception as error:
-        print(f"Could not stop the runtime session: {error}", file=sys.stderr)
+        logger.exception("Session cleanup failed; session=%s", conversation.session_id)
+        print(f"Could not stop the runtime session: {error} (details in error.log)", file=sys.stderr)
     finally:
         conversation.invoked = False
 
@@ -60,8 +65,16 @@ def reset_conversation(conversation):
     conversation.session_id = str(uuid.uuid4())
 
 
+def resume_conversation(conversation, session_id):
+    # Validate before stopping the current conversation.
+    session_id = str(uuid.UUID(session_id))
+    stop_session(conversation)
+    conversation.session_id = session_id
+
+
 def run_conversation(conversation):
-    print("Chat ready. /new starts a fresh conversation; /exit quits.")
+    print("Chat ready. /new starts fresh; /session shows the ID; /resume <ID> restores; /exit quits.")
+    print(f"Session: {conversation.session_id}")
     while True:
         prompt = input("You: ").strip()
         if not prompt:
@@ -70,16 +83,33 @@ def run_conversation(conversation):
             return
         if prompt == "/new":
             reset_conversation(conversation)
-            print("New conversation.")
+            print(f"New conversation. Session: {conversation.session_id}")
+            continue
+        if prompt == "/session":
+            print(f"Session: {conversation.session_id}")
+            continue
+        if prompt == "/resume" or prompt.startswith("/resume "):
+            try:
+                resume_conversation(conversation, prompt.removeprefix("/resume").strip())
+                print(f"Resuming session: {conversation.session_id}")
+            except ValueError:
+                print("Use /resume followed by a valid UUID session ID.", file=sys.stderr)
             continue
         try:
             reply = ask(conversation, prompt)
             print(f"Agent: {reply}\n")
         except Exception as error:
-            print(f"Error: {error}", file=sys.stderr)
+            logger.exception("Chat request failed; session=%s", conversation.session_id)
+            print(f"Error: {error} (details in error.log)", file=sys.stderr)
 
 
 def main():
+    logging.basicConfig(
+        filename="error.log",
+        encoding="utf-8",
+        level=logging.ERROR,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     load_dotenv(Path.cwd() / ".env", override=False)
     conversation = create_conversation()
     try:
