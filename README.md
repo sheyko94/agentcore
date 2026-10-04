@@ -10,6 +10,7 @@ locally in `voice/`, which is ignored by Git and not included in this repository
 | Directory | Purpose |
 | --- | --- |
 | [chat/](chat/README.md) | Text CLI, agent, and AgentCore runtime |
+| [tools/runtime_status/](tools/runtime_status/README.md) | Shared Lambda tool for inspecting runtime deployment status |
 | [docs/](docs/chat-flow.md) | Mermaid diagram separating the local machine from AWS Cloud |
 
 ## Start a chat
@@ -73,8 +74,12 @@ rename to `chat/src/agent`; local entry points were verified after the rename.
 Source changes require a new image and runtime update to reach AWS.
 [TODO.md](TODO.md) records the verification history.
 
-Keep the experiment small: text dialogue and short-term agent memory. There are
-no tools, RAG, UI, summaries, or long-term memory. Automated test files remain
+Keep the experiment small: text dialogue and short-term agent memory. The next
+experiment is a shared runtime-status Lambda tool; its source and Gateway schema
+are in `tools/runtime_status/`. Lambda invocation succeeded and its Gateway
+target reports `READY`; chat integration and verification through the agent
+remain pending.
+There is no RAG, UI, summaries, or long-term memory. Automated test files remain
 deferred; use focused offline checks and report live AWS verification separately.
 
 If you have the preserved local `voice/` directory, run it from the repository root:

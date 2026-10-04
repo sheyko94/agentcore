@@ -8,8 +8,9 @@ The user's current instructions take precedence.
 
 Experiment with Amazon Bedrock AgentCore using a minimal text conversation:
 the user asks, the agent replies, and follow-ups reuse short-term agent memory.
-Keep the implementation small. No tools, RAG, UI, summaries, long-term memory
-strategies, or new voice work is needed unless the user changes the scope.
+Keep the implementation small. The next experiment is one shared runtime-status
+Lambda tool exposed through AgentCore Gateway. No RAG, UI, summaries, long-term
+memory strategies, or new voice work is needed unless the user changes the scope.
 
 The active project is `chat/`. The preserved voice prototype is local-only in
 `voice/`, ignored by Git and excluded from pushes. If present, read its local
@@ -18,6 +19,16 @@ unless the user explicitly resumes that project and asks to track it.
 
 ## Layout and entry points
 
+- `tools/runtime_status/`: shared Lambda source, SDK requirements, and Gateway
+  tool schema for `get_runtime_status`. It takes a required `runtime_id` tool
+  argument supplied by the user and reads that runtime's deployment
+  status, not chat health. The user deployed Lambda and reported the Gateway
+  target READY on 2026-10-04. Agent integration and tool verification through
+  `uv run chat` remain pending.
+- Package the shared Lambda with the terminal commands in its README using
+  `uv pip install` and `zip` (Python 3.12 ARM64 target). No build script is needed.
+- Shared tools live outside `chat/` and `voice/` so either agent can call them
+  through Gateway without importing the other's application code.
 - `chat/src/agent/agent.py`: boto3 Bedrock Converse call and one conversation's
   retrieved history. Save a turn only after a valid text reply.
 - `chat/src/agent/memory.py`: AgentCore short-term event reads/writes; paginate
@@ -109,3 +120,6 @@ Keep generated files, `.env`, `.venv/`, session artifacts, and AWS secrets out o
 Git. Avoid reading private configuration or recordings unless needed. Preserve
 unrelated user changes; untracked files are not disposable. Documentation review
 alone does not authorize cloud deployments or resource changes.
+
+Test Gateway tools through the chat agent with `uv run chat` after integration.
+Do not add a separate manual MCP diagnostic workflow unless the user asks.

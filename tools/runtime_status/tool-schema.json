@@ -1,0 +1,26 @@
+[
+  {
+    "name": "get_runtime_status",
+    "description": "Get the deployment status and version of the AgentCore runtime identified by the user. READY means the deployment is ready, not that model calls or memory permissions have been verified. This tool does not inspect active chat sessions.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "runtime_id": {
+          "type": "string",
+          "description": "The exact AgentCore runtime ID supplied by the user, for example example_runtime-AbCdEf1234. Use the ID, not the ARN. Ask the user for it if missing; do not invent or change it."
+        }
+      },
+      "required": ["runtime_id"]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "runtime_id": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "type": "string" },
+        "version": { "type": "string" }
+      },
+      "required": ["runtime_id", "name", "status", "version"]
+    }
+  }
+]
