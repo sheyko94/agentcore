@@ -19,6 +19,16 @@ unless the user explicitly resumes that project and asks to track it.
 
 ## Layout and entry points
 
+- `infra/`: Python CDK project with uv lockfile and a pinned local Node CDK CLI.
+  `stack.py` wires service definitions in `services/`: `agentcore.py` contains
+  Memory, Runtime, and Gateway; other files contain Lambda, IAM, ECR assets,
+  and CloudWatch. It provisions all application resources
+  from scratch, packages existing source, and wires IAM/environment settings.
+  `cdk.json` targets account `781356123457`, `eu-west-1`. Memory starts empty with
+  three-day event retention and is deleted with the stack; no existing resource
+  IDs or import/reuse mode.
+  Follow `infra/README.md`; do not silently replace or delete manual resources.
+
 - `tools/runtime_status/`: shared Lambda source, SDK requirements, and Gateway
   tool schema for `get_runtime_status`. It takes a required `runtime_id` tool
   argument supplied by the user and reads that runtime's deployment
@@ -83,6 +93,18 @@ credential chain in the runtime; do not require a local AWS profile there or
 bake credentials/configuration files into an image. Configure the hosted model
 and region in AgentCore. Deployment commands are in `chat/README.md`.
 
+Prefer the CDK workflow in `infra/README.md` for new infrastructure deployments.
+From `infra/`, use `uv sync --locked --managed-python`, `npm ci`, and
+`npx cdk synth --quiet` for local validation. Bootstrap and deploy mutate AWS;
+run them only when deployment is requested. CDK packages the shared Lambda with
+uv and builds the ARM64 chat image. `services/ecr.py` explicitly creates
+`agentcore-chat-cdk`, then copies the bootstrap image asset into it. Runtime
+creation depends on image publication and pulls only from this application
+repository. Image publishing permissions are scoped in `services/iam.py`.
+Destroy deletes the application's Memory, conversation events, ECR repository,
+and images. Bootstrap
+assets and old manual resources remain outside that cleanup. Voice remains excluded.
+
 ## Behavior to preserve
 
 The CLI starts with a fresh UUID, reuses it for follow-ups, and creates a new ID
@@ -94,8 +116,9 @@ resource, configured actor, and session ID. `/session` displays the UUID and
 `/resume <UUID>` selects saved history; `/new` does not erase prior events.
 This is a single-user prototype, not per-user authorization. Use one caller per
 conversation; a process lock does not provide distributed serialization.
-No long-term strategies or RAM fallback. Failed inference writes nothing;
-memory errors surface. Unknown write outcomes or lost responses can leave a
+No long-term strategies or RAM fallback. Save only non-empty `end_turn` replies;
+failed inference or other generation stop reasons write nothing.
+Memory errors surface. Unknown write outcomes or lost responses can leave a
 saved turn the caller did not see, and user retries can duplicate turns.
 There is no history trimming or transcript export; CloudWatch can contain text.
 Deleting runtime compute does not delete the separate Memory resource.
@@ -113,8 +136,18 @@ checks for configuration wiring, multi-turn memory, failed-turn behavior,
 session reset/isolation, and cleanup. Do not mistake imports or local HTTP
 checks for a verified deployment. Report live AWS verification separately.
 
-The user confirmed the deployed chat and Gateway tool working on 2026-10-04,
-using `testing_local_1-Pgyd5WH6O4` in `eu-west-1`. This does not establish that
+The user confirmed the manual chat and Gateway tool working on 2026-10-04,
+using `testing_local_1-Pgyd5WH6O4` in `eu-west-1`. That manual Runtime, Memory,
+Gateway/target, Lambda, ECR repository, four experiment roles and two customer
+policies were deleted later that day for the CDK migration. Their four remaining
+CloudWatch groups and all three related log deliveries, sources, and destinations
+were also deleted and verified absent. The shared CDK bootstrap repository was preserved.
+The user confirmed successful CDK deployment on 2026-10-04. Live chat, memory,
+and Gateway acceptance checks for the CDK deployment remain pending.
+The caller needed a separate IAM policy allowing `sts:AssumeRole` on the four
+CDK bootstrap deployment, file-publishing, image-publishing, and lookup roles.
+This caller setup is outside the application stack and precedes deployment.
+The previous live confirmation does not establish that
 every failure, restart/resume, or session-isolation case was tested. The chat
 README contains acceptance checks. Future source changes require an image rebuild
 and runtime update; pushing the image alone is insufficient. Do not redeploy

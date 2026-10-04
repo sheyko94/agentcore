@@ -58,8 +58,11 @@ class Chat:
         model_tools = [{**tool, "name": tool["name"].rsplit("___", 1)[-1]} for tool in tools]
         for _ in range(MAX_TOOL_CALLS + 1):
             response = self.converse(messages, model_tools)
+            stop_reason = response["stopReason"]
+            if stop_reason not in ("end_turn", "tool_use"):
+                raise RuntimeError(f"The model did not complete its reply: {stop_reason}.")
             reply = response["output"]["message"]
-            if response["stopReason"] != "tool_use":
+            if stop_reason == "end_turn":
                 text = "\n".join(block["text"] for block in reply["content"] if "text" in block)
                 text = re.sub(r"<thinking>.*?(?:</thinking>|$)", "", text, flags=re.DOTALL).strip()
                 if not text.strip():

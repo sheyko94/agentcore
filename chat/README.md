@@ -7,6 +7,14 @@ discovered through an IAM-authenticated AgentCore Gateway. There are no long-ter
 memory strategies.
 See [the chat flow diagram](../docs/chat-flow.md) for the local/cloud boundary.
 
+Use [the CDK deployment guide](../infra/README.md) to provision and update this
+application with infrastructure as code. The manual provisioning commands below
+remain reference instructions; use one approach for each set of resources.
+
+The old manual deployment was deleted on 2026-10-04 for the CDK migration.
+Runtime and Gateway IDs below are historical examples; replace them when using
+manual setup. The CDK deployment prints the new runtime ARN for `uv run chat`.
+
 ## Setup and configuration
 
 Run the commands in this README from `chat/`. Requires Python 3.12+, `uv`, an
@@ -88,8 +96,10 @@ answer, including calls that returned a tool error.
 - Blank input is ignored. Invocation errors are printed and the loop continues.
 
 The runtime reads saved events before inference and saves one event containing
-the successful user/assistant pair before returning the reply. Failed inference
-or an empty reply writes nothing. A memory read/write error is surfaced, without
+the successful user/assistant pair before returning the reply. Only a non-empty
+reply with Bedrock's `end_turn` completion reason is saved. Failed inference,
+token-limited or otherwise incomplete generation, and empty replies write nothing.
+A memory read/write error is surfaced, without
 a fallback to RAM. A write whose outcome is unknown, or a lost response, can
 leave a saved turn that the CLI did not display; retrying can create another turn.
 

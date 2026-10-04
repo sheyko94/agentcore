@@ -1,0 +1,9 @@
+{
+  "app": "uv run --locked --managed-python python app.py",
+  "context": {
+    "account": "781356123457",
+    "region": "eu-west-1",
+    "model": "eu.amazon.nova-lite-v1:0",
+    "actor": "ivan"
+  }
+}

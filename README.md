@@ -10,10 +10,16 @@ locally in `voice/`, which is ignored by Git and not included in this repository
 | Directory | Purpose |
 | --- | --- |
 | [chat/](chat/README.md) | Text CLI, agent, and AgentCore runtime |
+| [infra/](infra/README.md) | Python CDK deployment for the chat and shared tool |
 | [tools/runtime_status/](tools/runtime_status/README.md) | Shared Lambda tool for inspecting runtime deployment status |
 | [docs/](docs/chat-flow.md) | Mermaid diagram separating the local machine from AWS Cloud |
+| [AWS architecture](docs/aws-architecture.md) | Colored service boundaries, IAM roles, and CDK deployment flow |
 
 ## Start a chat
+
+For infrastructure setup and future deployments, use [the CDK guide](infra/README.md).
+It packages the Lambda and chat image, configures permissions, and deploys the
+Runtime and Gateway. The manual AWS commands remain reference instructions.
 
 Requires `uv`, uv-managed Python 3.12, an AWS profile, and a deployed chat runtime. Run from
 the repository root:
@@ -67,9 +73,13 @@ still contain invocation payloads and errors. AWS calls incur normal charges.
 ## Status and development
 
 The user verified the deployed text chat, AgentCore Memory, and runtime-status
-Gateway tool through `uv run chat` on 2026-10-04. The active runtime is
-`testing_local_1-Pgyd5WH6O4` in `eu-west-1`. Source changes require rebuilding and
-pushing the chat image, then updating the runtime; pushing alone is insufficient.
+Gateway tool through `uv run chat` on 2026-10-04. That manual deployment was
+removed later the same day to start fresh with CDK. Runtime, Memory, Gateway,
+Lambda, the old ECR repository, and their experiment roles/policies are deleted.
+Their CloudWatch log groups and log-delivery records are also deleted. The shared
+CDK bootstrap repository was preserved.
+The user confirmed the CDK application deployed successfully on 2026-10-04.
+Live chat, memory, and Gateway acceptance checks for this deployment remain pending.
 
 The shared `get_runtime_status` tool accepts a runtime ID from your message.
 The model requests the tool through Gateway, Lambda reads the runtime's latest

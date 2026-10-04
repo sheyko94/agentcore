@@ -4,6 +4,10 @@ A shared Lambda function for the text and future voice agents. It calls
 AgentCore's `GetAgentRuntime` API and returns the requested runtime's deployment
 status. It has no dependency on either agent's Python package.
 
+[The CDK stack](../../infra/README.md) packages and deploys this Lambda, its
+Gateway target, and IAM roles automatically. The terminal commands below are
+the manual setup reference.
+
 ## Files and configuration
 
 - `handler.py`: Lambda entry point `handler.lambda_handler`.
@@ -71,8 +75,9 @@ sudo installer -pkg /tmp/AWSCLIV2.pkg -target /
 ```
 
 The commands below describe first-time setup in account `781356123457`, region
-`eu-west-1`. These resources already exist for this experiment; skip creation
-when reusing them. For another account, replace the account IDs in the ARNs.
+`eu-west-1`. The old manually created resources were deleted on 2026-10-04 for
+the CDK migration. IDs below are historical examples. Prefer the CDK guide for
+the new deployment. For another account, replace the account IDs in the ARNs.
 
 ## Step 1: Package the Lambda
 
@@ -342,7 +347,7 @@ whose runtimes the tool can inspect; this example targets `eu-west-1`. Use expli
 ```
 
 Step 3 grants the Gateway execution role permission to invoke this Lambda.
-The chat runtime's execution role also has Gateway invocation permission.
+The CDK chat runtime's execution role is configured with Gateway invocation permission.
 The future voice agent will need the same permission when connected.
 
 ## Verification status
