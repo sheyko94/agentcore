@@ -18,7 +18,9 @@ def invoke(payload, context):
     if not context.session_id:
         raise ValueError("A runtime session ID is required for conversation memory.")
     with lock:
-        return {"reply": Chat().ask(prompt, context.session_id)}
+        chat = Chat()
+        reply = chat.ask(prompt, context.session_id)
+        return {"reply": reply, "tools_used": chat.tools_used}
 
 
 def main():

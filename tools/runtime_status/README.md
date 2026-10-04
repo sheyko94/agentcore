@@ -44,6 +44,36 @@ The result deliberately excludes runtime environment variables and credentials.
 SDK failures propagate as Lambda errors rather than being reported as a status.
 Lambda's normal error logging records uncaught exceptions in CloudWatch.
 
+## AWS CLI prerequisite
+
+Use a current AWS CLI v2 and export your profile before running AWS commands:
+
+```bash
+export AWS_PROFILE=default
+export AWS_REGION=eu-west-1
+export PATH="/usr/local/bin:$PATH"
+rehash
+command -v aws
+aws --version
+```
+
+On this Mac, `command -v aws` should show `/usr/local/bin/aws`, the standalone
+AWS CLI. The Homebrew executable currently fails with a Python `pyexpat` /
+`libexpat` error. Repeat the PATH selection in new terminals or add it to
+`~/.zshrc`. The AWS CLI does not load `chat/.env`.
+
+If the standalone CLI is not installed:
+
+```bash
+curl -fL https://awscli.amazonaws.com/AWSCLIV2.pkg -o /tmp/AWSCLIV2.pkg
+sudo installer -pkg /tmp/AWSCLIV2.pkg -target /
+/usr/local/bin/aws --version
+```
+
+The commands below describe first-time setup in account `781356123457`, region
+`eu-west-1`. These resources already exist for this experiment; skip creation
+when reusing them. For another account, replace the account IDs in the ARNs.
+
 ## Step 1: Package the Lambda
 
 From the repository root, paste this block into your terminal to build a ZIP
@@ -105,11 +135,10 @@ global; their policy restricts runtime reads to `eu-west-1`.
 Create a dedicated execution role trusted by Lambda:
 
 ```bash
-runtime_status_account=$(aws sts get-caller-identity --region eu-west-1 --query Account --output text)
-runtime_status_role_arn=$(aws iam create-role \
+aws iam create-role \
   --role-name agentcore-runtime-status-lambda \
   --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}' \
-  --query Role.Arn --output text)
+  --query Role.Arn --output text
 
 aws iam attach-role-policy \
   --role-name agentcore-runtime-status-lambda \
@@ -118,7 +147,7 @@ aws iam attach-role-policy \
 aws iam put-role-policy \
   --role-name agentcore-runtime-status-lambda \
   --policy-name ReadRuntimeStatus \
-  --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"bedrock-agentcore:GetAgentRuntime\",\"Resource\":\"arn:aws:bedrock-agentcore:eu-west-1:${runtime_status_account}:runtime/*\"}]}"
+  --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"bedrock-agentcore:GetAgentRuntime","Resource":"arn:aws:bedrock-agentcore:eu-west-1:781356123457:runtime/*"}]}'
 ```
 
 The role grants log writing and read-only runtime inspection in this account
@@ -131,7 +160,7 @@ aws lambda create-function \
   --runtime python3.12 \
   --architectures arm64 \
   --handler handler.lambda_handler \
-  --role "$runtime_status_role_arn" \
+  --role arn:aws:iam::781356123457:role/agentcore-runtime-status-lambda \
   --zip-file fileb://tools/runtime_status/runtime-status.zip \
   --timeout 30 \
   --memory-size 256
@@ -171,37 +200,9 @@ commands use account `781356123457` and `eu-west-1`. Your caller needs IAM
 role/policy management, `iam:PassRole`, and Gateway creation, target creation,
 and read permissions. Run each block only after the previous block succeeds.
 
-Use an up-to-date AWS CLI v2. The locally installed `2.31.10` uses an older
-Gateway API model that requires `--authorizer-configuration` even for IAM.
-The current API requires that configuration only for `CUSTOM_JWT`.
-For the Homebrew installation on this Mac, update before creating Gateway:
-
-```bash
-brew update
-brew upgrade awscli
-aws --version
-```
-
-If the Homebrew CLI fails with a `pyexpat` / missing `libexpat` symbol error,
-use AWS's standalone macOS installer, then prefer its executable in this terminal:
-
-```bash
-curl -fL https://awscli.amazonaws.com/AWSCLIV2.pkg -o /tmp/AWSCLIV2.pkg
-sudo installer -pkg /tmp/AWSCLIV2.pkg -target /
-/usr/local/bin/aws --version
-export PATH="/usr/local/bin:$PATH"
-rehash
-command -v aws
-aws --version
-```
-
-`command -v aws` should report `/usr/local/bin/aws`. This selects the standalone
-CLI instead of the failing Homebrew executable at `/opt/homebrew/bin/aws`.
-The PATH change applies to the current terminal; repeat it in another terminal
-or use `/usr/local/bin/aws` explicitly. Existing AWS profiles remain available.
-
-If Gateway creation fails, do not run `get-gateway` with the empty captured ID.
-Update the CLI and retry creation; do not add JWT configuration to an IAM Gateway.
+Use the standalone CLI selected above. Older CLI API models may incorrectly
+require `--authorizer-configuration` for `AWS_IAM`; update the CLI rather than
+adding JWT configuration. That configuration applies to `CUSTOM_JWT`.
 
 Create a separate Gateway execution role. AgentCore assumes this role to invoke
 our Lambda; it does not need the Lambda's runtime-read permissions.
@@ -255,7 +256,14 @@ aws bedrock-agentcore-control get-gateway \
 
 If the role cannot be assumed, wait briefly and retry creation. Wait until
 `get-gateway` reports `READY` before adding the target. If creation already
-succeeded, reuse its ID rather than creating another Gateway.
+succeeded, reuse its ID rather than creating another Gateway. In a new terminal,
+restore this experiment's existing ID before registering or checking targets:
+
+```bash
+tools_gateway_id="agentcore-tools-j4l3ivunkl"
+```
+
+For another Gateway, use the ID returned by creation.
 
 Register the existing Lambda with the tool definitions from this repository:
 
@@ -284,12 +292,12 @@ end-to-end tool invocation.
 
 ## Step 4: Connect and test through the chat agent
 
-Agent integration is the next implementation step. Give the chat runtime's
-execution role `bedrock-agentcore:InvokeGateway` permission on this Gateway,
-configure the Gateway URL on the runtime, and add tool discovery and execution
-to the chat agent. Rebuild the image and update the runtime after those changes.
+The chat agent implements tool discovery and execution. Follow
+[Connect Gateway tools](../../chat/README.md#connect-gateway-tools) to give the
+chat runtime's execution role Gateway invocation permission, configure the
+Gateway URL, rebuild the image, and update the runtime.
 
-Once integration is deployed, test from `chat/` using the normal command:
+After deployment or when checking the existing integration, test from `chat/`:
 
 ```bash
 uv run chat
@@ -334,8 +342,8 @@ whose runtimes the tool can inspect; this example targets `eu-west-1`. Use expli
 ```
 
 Step 3 grants the Gateway execution role permission to invoke this Lambda.
-Each agent's execution role will need permission to invoke the Gateway
-when we connect it with IAM authentication.
+The chat runtime's execution role also has Gateway invocation permission.
+The future voice agent will need the same permission when connected.
 
 ## Verification status
 
@@ -344,8 +352,10 @@ invoked it for `testing_local_1-Pgyd5WH6O4`: deployment status `READY`, version 
 The user also created the IAM-authenticated Gateway and reported its Lambda
 target as `READY`. The commands used are documented in steps 2 and 3 above.
 
-The chat agent's tool loop and verification through `uv run chat` remain pending.
-A target's `READY` status does not verify a complete Gateway-to-Lambda call.
+The user reported the complete deployed chat → Gateway → Lambda flow working
+through `uv run chat` on 2026-10-04. The Gateway is
+`agentcore-tools-j4l3ivunkl`. This is user-reported live verification; subsequent
+source changes still require packaging and deployment before they are verified.
 
 References: [GetAgentRuntime API](https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_GetAgentRuntime.html),
 [Gateway Lambda targets](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-add-target-lambda.html),

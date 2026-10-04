@@ -15,12 +15,13 @@ locally in `voice/`, which is ignored by Git and not included in this repository
 
 ## Start a chat
 
-Requires Python 3.12+, `uv`, an AWS profile, and a deployed chat runtime. Run from
+Requires `uv`, uv-managed Python 3.12, an AWS profile, and a deployed chat runtime. Run from
 the repository root:
 
 ```bash
 cd chat
-uv sync --locked
+uv python install 3.12
+uv sync --locked --managed-python
 ```
 
 For first-time setup, copy `.env.example` to `.env`. If `.env` already exists,
@@ -43,10 +44,11 @@ From the repository root, the equivalent command is
 Bedrock mode. It reads `.env` from its working directory without overriding
 existing shell variables. `AWS_REGION` must match your runtime's region.
 
-`CHAT_MODEL`, `AWS_REGION`, `AGENTCORE_MEMORY_ID`, and `CHAT_ACTOR_ID` must be
+`CHAT_MODEL`, `AWS_REGION`, `AGENTCORE_MEMORY_ID`, `CHAT_ACTOR_ID`, and
+`AGENTCORE_GATEWAY_URL` must be
 configured separately on the hosted runtime. Local `.env` values are not forwarded to AWS. See
 [chat setup and deployment](chat/README.md) for the configuration table,
-permissions, local HTTP checks, and Docker/ECR deployment steps.
+permissions, Gateway connection, and Docker/ECR deployment steps.
 
 ## Conversation behavior
 
@@ -64,23 +66,20 @@ still contain invocation payloads and errors. AWS calls incur normal charges.
 
 ## Status and development
 
-The test runtime, `agentcore-chat` ECR repository, and related CloudWatch log
-groups in `eu-west-1` were deleted on 2026-10-01. AWS checks confirmed their
-absence. Deploy a new runtime before using the CLI again.
+The user verified the deployed text chat, AgentCore Memory, and runtime-status
+Gateway tool through `uv run chat` on 2026-10-04. The active runtime is
+`testing_local_1-Pgyd5WH6O4` in `eu-west-1`. Source changes require rebuilding and
+pushing the chat image, then updating the runtime; pushing alone is insufficient.
 
-A deployed container runtime in `eu-west-1` passed reply, follow-up memory, and
-fresh-session isolation checks on 2026-10-01. That check preceded the package
-rename to `chat/src/agent`; local entry points were verified after the rename.
-Source changes require a new image and runtime update to reach AWS.
-[TODO.md](TODO.md) records the verification history.
+The shared `get_runtime_status` tool accepts a runtime ID from your message.
+The model requests the tool through Gateway, Lambda reads the runtime's latest
+deployment status, and the agent explains the result. `READY` describes deployment
+readiness, not a health check of chat, memory, or model permissions.
 
-Keep the experiment small: text dialogue and short-term agent memory. The next
-experiment is a shared runtime-status Lambda tool; its source and Gateway schema
-are in `tools/runtime_status/`. Lambda invocation succeeded and its Gateway
-target reports `READY`; chat integration and verification through the agent
-remain pending.
-There is no RAG, UI, summaries, or long-term memory. Automated test files remain
-deferred; use focused offline checks and report live AWS verification separately.
+Keep the experiment small: text dialogue, short-term agent memory, and shared
+Gateway tools. There is no RAG, UI, summaries, or long-term memory. Automated test
+files remain deferred; use focused offline checks and report live AWS verification
+separately. The [chat README](chat/README.md) includes the agent acceptance checks.
 
 If you have the preserved local `voice/` directory, run it from the repository root:
 

@@ -8,8 +8,8 @@ The user's current instructions take precedence.
 
 Experiment with Amazon Bedrock AgentCore using a minimal text conversation:
 the user asks, the agent replies, and follow-ups reuse short-term agent memory.
-Keep the implementation small. The next experiment is one shared runtime-status
-Lambda tool exposed through AgentCore Gateway. No RAG, UI, summaries, long-term
+Keep the implementation small. One shared runtime-status Lambda tool is exposed
+through AgentCore Gateway. No RAG, UI, summaries, long-term
 memory strategies, or new voice work is needed unless the user changes the scope.
 
 The active project is `chat/`. The preserved voice prototype is local-only in
@@ -22,15 +22,19 @@ unless the user explicitly resumes that project and asks to track it.
 - `tools/runtime_status/`: shared Lambda source, SDK requirements, and Gateway
   tool schema for `get_runtime_status`. It takes a required `runtime_id` tool
   argument supplied by the user and reads that runtime's deployment
-  status, not chat health. The user deployed Lambda and reported the Gateway
-  target READY on 2026-10-04. Agent integration and tool verification through
-  `uv run chat` remain pending.
+  status, not chat health. The user confirmed the deployed chat → Gateway → Lambda
+  flow working through `uv run chat` on 2026-10-04.
 - Package the shared Lambda with the terminal commands in its README using
   `uv pip install` and `zip` (Python 3.12 ARM64 target). No build script is needed.
 - Shared tools live outside `chat/` and `voice/` so either agent can call them
   through Gateway without importing the other's application code.
 - `chat/src/agent/agent.py`: boto3 Bedrock Converse call and one conversation's
-  retrieved history. Save a turn only after a valid text reply.
+  retrieved history, Gateway tool schemas, and a loop capped at four tool calls.
+  Save only the user message and valid final reply; tool exchanges are not saved.
+  Expose short tool names to Nova and map them back to Gateway's prefixed names.
+  Reject alias collisions and remove Nova thinking blocks from final replies.
+- `chat/src/agent/gateway.py`: MCP initialization, paginated tool discovery,
+  and calls signed with the runtime's normal credentials. Close HTTP on exit.
 - `chat/src/agent/memory.py`: AgentCore short-term event reads/writes; paginate
   history and store each user/assistant pair in one event.
 - `chat/src/agent/cli.py`: local terminal UI calling the deployed AgentCore
@@ -42,31 +46,35 @@ unless the user explicitly resumes that project and asks to track it.
 - `chat/Dockerfile`: ARM64 runtime container, port 8080, installed `chat-runtime`.
 - `chat/`: Python >=3.12 uv project with its own lockfile. The local-only `voice/`
   project has separate dependencies; do not add audio libraries or Swift to chat.
+- `chat/.python-version`: selects Python 3.12, matching Docker. Use uv-managed
+  Python for the local environment to avoid broken Homebrew interpreter links.
 - [README.md](README.md): orientation; [chat/README.md](chat/README.md): setup,
   deployment, and troubleshooting; [docs/chat-flow.md](docs/chat-flow.md): diagram.
-- [TODO.md](TODO.md): verification history. `voice/TODO.md` is the earlier voice plan.
 
 ## Commands and configuration
 
 From the repository root:
 
 ```bash
-uv sync --project chat --locked
+uv python install 3.12
+uv sync --project chat --locked --managed-python
 uv run --directory chat chat
-uv run --directory chat chat-runtime
 # Only if the ignored local voice project is present:
 uv run --directory voice brainstorm
 ```
 
-Run the two chat commands separately: `chat` invokes AWS; `chat-runtime` starts
-an HTTP server locally for curl checks. Neither is an offline smoke check.
-Inside `chat/`, use `uv run chat` or `uv run chat-runtime`.
+Inside `chat/`, use `uv run chat`. This invokes AWS, so it is not an offline
+smoke check. `chat-runtime` is the container's server entry point; optional local
+HTTP diagnostics are documented in the chat README.
 
 The user supplies configuration; use direct `os.environ` reads without defaults,
 custom environment validation, or CLI overrides. The local CLI reads
 `AWS_PROFILE`, `AWS_REGION`, and `AGENTCORE_RUNTIME_ARN`. The runtime reads
-`AWS_REGION`, `CHAT_MODEL`, `AGENTCORE_MEMORY_ID`, and `CHAT_ACTOR_ID`; these
+`AWS_REGION`, `CHAT_MODEL`, `AGENTCORE_MEMORY_ID`, `CHAT_ACTOR_ID`, and
+`AGENTCORE_GATEWAY_URL`; these
 runtime settings are not sent by the CLI.
+The Gateway uses IAM authentication; grant the runtime role
+`bedrock-agentcore:InvokeGateway` on its ARN and use a Gateway in `AWS_REGION`.
 Local `.env` files load from the working directory without overriding shell
 variables. `chat/.env.example` has example values, not application defaults.
 
@@ -105,15 +113,12 @@ checks for configuration wiring, multi-turn memory, failed-turn behavior,
 session reset/isolation, and cleanup. Do not mistake imports or local HTTP
 checks for a verified deployment. Report live AWS verification separately.
 
-The test runtime, chat ECR repository, and related CloudWatch log groups in
-`eu-west-1` were deleted and confirmed absent on 2026-10-01. The CLI needs a new
-deployment and runtime ARN before another hosted chat. Do not redeploy unless
-the user requests it.
-
-Hosted reply/memory/isolation checks passed on 2026-10-01 before the package
-rename from `agentcore_chat` to `agent`; local entry points were verified after
-that rename. Later source changes need an image rebuild and runtime update.
-Do not reintroduce old package paths or claim an older cloud test validates new code.
+The user confirmed the deployed chat and Gateway tool working on 2026-10-04,
+using `testing_local_1-Pgyd5WH6O4` in `eu-west-1`. This does not establish that
+every failure, restart/resume, or session-isolation case was tested. The chat
+README contains acceptance checks. Future source changes require an image rebuild
+and runtime update; pushing the image alone is insufficient. Do not redeploy
+unless the user requests it, or reintroduce the old `agentcore_chat` package path.
 
 Verify current official AWS documentation before changing API/runtime assumptions.
 Keep generated files, `.env`, `.venv/`, session artifacts, and AWS secrets out of

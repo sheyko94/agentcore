@@ -38,7 +38,10 @@ def ask(conversation, prompt):
     )
     body = response["response"]
     try:
-        return json.loads(body.read())["reply"]
+        result = json.loads(body.read())
+        for tool in result.get("tools_used", []):
+            print(f"Tool: {tool}")
+        return result["reply"]
     finally:
         body.close()
 
