@@ -1,9 +1,9 @@
 # CDK infrastructure
 
 Deploy the text agent and shared runtime-status tool with one Python CDK stack.
-See [the AWS architecture diagrams](../docs/aws-architecture.md) for service,
-account, and deployment boundaries.
-Run commands below from `infra/`. Source stays in `chat/` and
+See [the project overview](../README.md#how-the-project-fits-together) for the runtime architecture.
+Run commands below from `infra/` unless a block starts from the repository root.
+Source stays in `chat/` and
 `tools/runtime_status/`; infrastructure imports neither application's package.
 
 ## Resources
@@ -19,10 +19,8 @@ Run commands below from `infra/`. Source stays in `chat/` and
 - Seven-day retention for Lambda logs and the runtime's default log group.
 
 The first deployment creates all application resources from scratch.
-The previous manual application resources were deleted on 2026-10-04 before
-this migration, including their CloudWatch log groups and log-delivery records.
-The shared CDK bootstrap repository was preserved. This stack does not import
-existing application resources. The Lambda's generated name is printed as an output.
+This stack does not import existing application resources. The Lambda's
+generated name is printed as an output.
 
 The new Memory starts empty. Old conversations are not copied or reused.
 CDK passes the new Memory ID directly to the new Runtime and scopes its IAM
@@ -38,7 +36,65 @@ Image deployment has an explicit order:
 
 The bootstrap staging repository is created separately by `cdk bootstrap`.
 `services/ecr.py` contains the application repository creation and image-copy
-definition. The manually created ECR repository is not used.
+definition.
+
+### Deployment flow
+
+```mermaid
+flowchart LR
+    subgraph LOCAL["Local machine · deployment"]
+        SOURCE["Repository<br/>chat/ + tools/runtime_status/ + infra/"]
+        CDK["CDK CLI + Python definitions<br/>Docker builds ARM64 image<br/>uv packages Lambda"]
+        SOURCE --> CDK
+    end
+
+    subgraph AWS["AWS account 781356123457 · eu-west-1"]
+        subgraph BOOTSTRAP["CDKToolkit · bootstrap stack"]
+            ECR["Amazon ECR<br/>Bootstrap staging repository"]
+            S3["Amazon S3<br/>Lambda + template assets"]
+            ROLES["AWS IAM<br/>Deployment / asset roles"]
+        end
+        CF["AWS CloudFormation<br/>Create / update application stack"]
+        subgraph APP["AgentCoreChatDev · application stack"]
+            APP_ECR["Amazon ECR<br/>agentcore-chat-cdk<br/>Explicit repository resource"]
+            COPY["Image deployment helper<br/>Copy ARM64 image + source-hash tag"]
+            RUNTIME["AgentCore Runtime"]
+            LAMBDA["AWS Lambda tool"]
+            SERVICES["AgentCore Memory + Gateway / target<br/>IAM execution roles<br/>CloudWatch log configuration"]
+        end
+    end
+
+    CDK -.->|"Publish container image"| ECR
+    CDK -.->|"Upload packaged assets"| S3
+    CDK -.->|"Deploy template using bootstrap roles"| CF
+    ROLES -.->|"Deployment permissions"| CF
+    CF -.->|"Provision and wire resources"| SERVICES
+    CF -.->|"Create / update Runtime"| RUNTIME
+    CF -.->|"Create / update Lambda"| LAMBDA
+    CF -.->|"Create application repository"| APP_ECR
+    CF -.->|"Publish image before Runtime"| COPY
+    ECR -.->|"Source image"| COPY
+    COPY -.->|"Copy image"| APP_ECR
+    APP_ECR -->|"Runtime pulls image"| RUNTIME
+    S3 -->|"Lambda deployment package"| LAMBDA
+
+    classDef local fill:#EFF6FF,stroke:#2563EB,color:#172554
+    classDef assets fill:#ECFDF5,stroke:#059669,color:#064E3B
+    classDef deploy fill:#FFF7ED,stroke:#EA580C,color:#7C2D12
+    classDef application fill:#F3E8FF,stroke:#7C3AED,color:#3B0764
+    classDef iam fill:#FAF5FF,stroke:#9333EA,color:#581C87
+    class SOURCE,CDK local
+    class ECR,S3,APP_ECR assets
+    class CF,COPY deploy
+    class RUNTIME,LAMBDA,SERVICES application
+    class ROLES iam
+    style LOCAL fill:#F8FAFC,stroke:#94A3B8,color:#0F172A
+    style AWS fill:#FFFFFF,stroke:#475569,color:#0F172A
+    style BOOTSTRAP fill:#F0FDF4,stroke:#059669,color:#064E3B
+    style APP fill:#FAF5FF,stroke:#7C3AED,color:#3B0764
+    linkStyle 1,2,3,4,5,6,7,8,9,10,11 stroke:#EA580C,stroke-width:1.5px
+    linkStyle 12,13 stroke:#059669,stroke-width:2px
+```
 
 ## File layout
 
@@ -67,7 +123,17 @@ export AWS_PROFILE=default
 export AWS_REGION=eu-west-1
 ```
 
-CDK uses your profile directly, not the AWS CLI executable or `chat/.env`.
+CDK uses your profile directly and does not load `chat/.env`.
+Confirm your profile belongs to the account selected in `cdk.json`. With a
+working AWS CLI, run:
+
+```bash
+aws sts get-caller-identity --profile "$AWS_PROFILE" --region "$AWS_REGION"
+```
+
+On this Mac, use `/usr/local/bin/aws` if the Homebrew AWS CLI fails with
+`pyexpat` / `libexpat` errors.
+
 `cdk.json` selects the target account/region, actor, and Nova Lite inference
 profile. Model IAM permissions cover Nova Lite; changing to another model also
 requires updating its resource ARNs in `services/iam.py`.
@@ -79,8 +145,7 @@ npx cdk bootstrap aws://781356123457/eu-west-1 --profile "$AWS_PROFILE"
 ```
 
 Bootstrap creates CDK deployment roles, an S3 asset bucket, and an ECR asset
-repository. Use a profile authorized to bootstrap/deploy: the earlier restricted
-`local_development` IAM user may need additional permissions. CDK uses
+repository. Use a profile authorized to bootstrap/deploy. CDK uses
 CloudFormation and bootstrap roles; it does not bypass IAM restrictions.
 
 After bootstrapping, the caller also needs `sts:AssumeRole` on these four roles
@@ -99,7 +164,7 @@ CloudFormation execution role, which uses `AdministratorAccess` by default.
 ```bash
 npx cdk synth --quiet
 npx cdk diff --profile "$AWS_PROFILE" --no-change-set
-npx cdk deploy --profile "$AWS_PROFILE" --outputs-file outputs.json
+npx cdk deploy AgentCoreChatDev --profile "$AWS_PROFILE" --outputs-file outputs.json
 ```
 
 Synthesis generates a template and bundles Lambda dependencies using `uv`.
@@ -111,37 +176,52 @@ The copy helper uses `cdk-ecr-deployment`, as recommended in the
 [AWS image assets documentation](https://docs.aws.amazon.com/cdk/api/v2/python/aws_cdk.aws_ecr_assets/README.html).
 CDK uses source hashes instead of a mutable `latest` image tag. `RepositoryUri`
 and `ImageUri` outputs show the application repository and the Runtime's image.
-No separate ZIP, ECR login/push, role-policy commands, or console runtime update
-are required. AgentCore updates `DEFAULT` to the latest version; start a new chat
+No separate ZIP, ECR login/push, application-role policy commands, or console
+runtime update are required. AgentCore updates `DEFAULT` to the latest version; start a new chat
 session after an update to use the new version.
 
 For normal updates, repeat diff and deploy. Change code and redeploy instead of
 editing stack-managed resources in the console.
 
-## Use the chat agent
+## Deployment outputs
 
-After deployment, select the runtime output and start the existing CLI:
+`outputs.json` is generated locally and ignored by Git.
+
+| Output | Use |
+| --- | --- |
+| `RuntimeArn` | `AGENTCORE_RUNTIME_ARN` for the local chat CLI |
+| `RuntimeId` | ID to supply when asking the runtime-status tool |
+| `GatewayUrl`, `MemoryId` | Resources CDK already configured on the hosted Runtime |
+| `LambdaName` | Find the deployed tool Lambda |
+| `RepositoryUri`, `ImageUri` | Application image repository and deployed image |
+
+From `infra/`, inspect the outputs and export the new Runtime ARN:
 
 ```bash
-export AGENTCORE_RUNTIME_ARN=$(uv run --locked python -c \
+cat outputs.json
+export AGENTCORE_RUNTIME_ARN=$(uv run --locked --managed-python python -c \
   'import json; print(json.load(open("outputs.json"))["AgentCoreChatDev"]["RuntimeArn"])')
-cd ../chat
-uv run chat
 ```
 
-Alternatively, copy `RuntimeArn` into your existing `chat/.env`. Exported shell
-values take precedence. Hosted model, actor, Memory, and Gateway settings come
-from CDK; local copies are not forwarded by the CLI.
-Your caller still needs `bedrock-agentcore:InvokeAgentRuntime` and
-`bedrock-agentcore:StopRuntimeSession` for the new runtime ARN. CDK does not modify
-the local IAM user's policies. Update an existing narrowly scoped caller policy
-if it only permits the old runtime.
+Keep `AWS_PROFILE` and `AWS_REGION` exported, then follow
+[the chat setup and run commands](../chat/README.md#set-up-and-run).
+Alternatively, put the ARN in `chat/.env`. Shell values take precedence.
+The caller needs invocation and cleanup permissions for the new Runtime ARN;
+this stack does not modify the local IAM user's policies.
 
-Ask for a greeting, then “Is the environment ready for runtime <RuntimeId>?”
-using the new `RuntimeId` output. Confirm the CLI prints
-`Tool: runtime-status___get_runtime_status` and the status. Use `/session` to save
-a session ID and `/resume <ID>` to check persisted context. These are live AWS
-checks; synthesis does not establish model access or hosted conversation behavior.
+## Deployment troubleshooting
+
+| Symptom | Resolution |
+| --- | --- |
+| Bootstrap cannot write its SSM version parameter | Fix the bootstrap caller or CloudFormation service role's SSM permissions before retrying |
+| `CDKToolkit` is `UPDATE_ROLLBACK_FAILED` | Correct the denied permissions, continue the rollback, and wait for `UPDATE_ROLLBACK_COMPLETE` before retrying bootstrap |
+| Cannot assume a CDK role; proceeding with default credentials | Check the caller's `sts:AssumeRole` permissions and the role trust policy |
+| Bootstrap asset bucket exists but is inaccessible | Ensure CDK can assume the file-publishing role; creating another bucket is not the fix |
+| Image build succeeds but asset publication fails | Read the earlier publishing error; check bootstrap-role access before changing the Dockerfile |
+
+Bootstrap is a one-time account/region setup, separate from deploying the
+application. Permissions to assume its roles are caller access setup, and cannot
+be supplied by an application stack that the caller is not yet allowed to deploy.
 
 ## Cleanup
 
@@ -154,7 +234,7 @@ npx cdk destroy --profile "$AWS_PROFILE"
 This removes the stack's Runtime, Gateway/target, tool Lambda, execution roles,
 Lambda log group, runtime default log group, and Memory with all conversation
 events. It also empties and deletes the application ECR repository, including
-its images. Old manually provisioned resources remain.
+its images. Resources outside the application stack remain.
 
 The shared `CDKToolkit` bootstrap stack, its asset bucket/repository, uploaded
 assets, and deployment helpers' own Lambda logs are outside this cleanup.
@@ -166,11 +246,9 @@ Additional log destinations enabled manually are outside this stack.
 
 Local synthesis checks the template, IAM/resource wiring, tool schema, Lambda
 packaging, and asset manifests. Deployment and hosted chat must be verified
-separately. No AWS deployment was performed while adding this code.
-
-The user confirmed successful CDK deployment on 2026-10-04 after configuring
-the caller's bootstrap-role permissions. Live chat, memory, and Gateway
-acceptance checks for this deployment remain pending.
+separately. Run [the chat acceptance checks](../chat/README.md#verify-the-deployed-application)
+through `uv run chat` to verify the deployed model, Memory, and Gateway flow.
+Current verification status is recorded in [AGENTS.md](../AGENTS.md#verification-status).
 
 References: [CDK assets](https://docs.aws.amazon.com/cdk/v2/guide/assets.html),
 [CDK bootstrapping](https://docs.aws.amazon.com/cdk/v2/guide/bootstrapping.html),

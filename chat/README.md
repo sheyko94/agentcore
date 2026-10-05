@@ -1,434 +1,329 @@
-# Minimal chat agent
+# Text chat
 
-A terminal chat backed by an AgentCore Runtime in AWS. The runtime's agent memory
-stores conversation events in AgentCore Memory and sends the saved history to
-the Bedrock inference model with each new message. The model can request tools
-discovered through an IAM-authenticated AgentCore Gateway. There are no long-term
-memory strategies.
-See [the chat flow diagram](../docs/chat-flow.md) for the local/cloud boundary.
+The local CLI invokes the hosted AgentCore `DEFAULT` endpoint. The hosted Python
+agent retrieves short-term conversation history, uses LangChain with Bedrock Converse, and
+uses tools discovered through Gateway. Infrastructure is managed by
+[the CDK project](../infra/README.md).
 
-Use [the CDK deployment guide](../infra/README.md) to provision and update this
-application with infrastructure as code. The manual provisioning commands below
-remain reference instructions; use one approach for each set of resources.
+## Set up and run
 
-The old manual deployment was deleted on 2026-10-04 for the CDK migration.
-Runtime and Gateway IDs below are historical examples; replace them when using
-manual setup. The CDK deployment prints the new runtime ARN for `uv run chat`.
-
-## Setup and configuration
-
-Run the commands in this README from `chat/`. Requires Python 3.12+, `uv`, an
-AWS profile, and a deployed runtime implementing this project's JSON interface.
+Requires `uv`, uv-managed Python 3.12, a configured AWS profile, and a deployed
+runtime. From the repository root:
 
 ```bash
+cd chat
 uv python install 3.12
 uv sync --locked --managed-python
 ```
 
-`.python-version` selects Python 3.12 to match the deployed container. Prefer
-uv-managed Python so Homebrew upgrades do not break the project's interpreter.
-
-For first-time setup, copy `.env.example` to `.env`; otherwise edit the existing
-file. The example uses `eu-west-1` and `eu.amazon.nova-lite-v1:0`. Those are example
-values, not application defaults.
-
-| Variable | CLI on your Mac | Hosted runtime in AWS |
-| --- | --- | --- |
-| `AWS_PROFILE` | Required; names your local AWS profile | Use the execution role; do not configure a local profile name |
-| `AWS_REGION` | Required; region of the AgentCore runtime | Required by the agent; region used for Bedrock calls |
-| `AGENTCORE_RUNTIME_ARN` | Required; your deployed runtime ARN | Not read by the agent |
-| `CHAT_MODEL` | Not read or sent by the CLI | Required; Bedrock model or inference profile ID |
-| `AGENTCORE_MEMORY_ID` | Not read by the CLI | Required; short-term Memory resource ID |
-| `CHAT_ACTOR_ID` | Not read by the CLI | Required; stable actor ID, e.g. `ivan` |
-| `AGENTCORE_GATEWAY_URL` | Not read or sent by the CLI | Required; IAM-authenticated Gateway MCP URL |
-
-Both entry points load `.env` from their working directory, with existing shell
-variables taking precedence. Configuration is read directly from `os.environ`,
-with no application defaults, CLI overrides, or custom configuration validation.
-The Docker image excludes `.env`: configure hosted values on the runtime itself.
-For local runtime testing, the same `chat/.env` can contain all seven variables.
-
-Your local profile needs `bedrock-agentcore:InvokeAgentRuntime` and
-`bedrock-agentcore:StopRuntimeSession`. The hosted execution role needs image
-pull/logging permissions and `bedrock:InvokeModel` access to the selected model
-or inference profile and its destination models. It also needs
-`bedrock-agentcore:ListEvents` and `bedrock-agentcore:CreateEvent` scoped to your
-Memory resource ARN. It also needs `bedrock-agentcore:InvokeGateway` scoped to
-the Gateway ARN. The same permissions are needed by your local profile when
-running `chat-runtime`. See
-[AWS runtime permissions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html).
-
-## AWS CLI for the commands below
-
-Use AWS's standalone macOS CLI installed at `/usr/local/bin/aws`; the Homebrew
-CLI on this machine failed to load Python's `pyexpat`. The commands below use the
-standalone path directly, so they also work in a new terminal. Confirm it works
-and select your profile:
+For first-time setup, copy `.env.example` to `.env`; edit an existing `.env`
+instead of overwriting it:
 
 ```bash
-/usr/local/bin/aws --version
-export AWS_PROFILE=default
-export AWS_REGION=eu-west-1
+cp .env.example .env
 ```
 
-If it is missing, follow the [AWS CLI macOS installation instructions](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html).
-On another machine, use the path to its working AWS CLI. AWS CLI commands do not
-load the project's `.env` file.
+The CLI needs only these variables:
 
-## Chat
+```dotenv
+AWS_PROFILE=default
+AWS_REGION=eu-west-1
+AGENTCORE_RUNTIME_ARN=YOUR_DEPLOYED_RUNTIME_ARN
+```
+
+Use `RuntimeArn` from `infra/outputs.json`. Its region must match `AWS_REGION`.
+The profile needs `bedrock-agentcore:InvokeAgentRuntime` and
+`bedrock-agentcore:StopRuntimeSession` for the runtime. CDK configures execution
+roles but does not change your local caller's permissions.
+
+Run from `chat/`:
 
 ```bash
 uv run chat
 ```
 
-The CLI always invokes AgentCore's `DEFAULT` endpoint. It sends
-`{"prompt":"..."}` and receives `{"reply":"...","tools_used":[...]}`. It waits for a complete reply
-before displaying it; responses are not streamed to the terminal.
-The CLI prints `Tool: <name>` for each completed Gateway tool call before the
-answer, including calls that returned a tool error.
+From the repository root, use `uv run --directory chat chat`. The CLI loads
+`.env` from its working directory without overriding exported shell values.
+There are no configuration flags or direct Bedrock mode.
 
-- Follow-up messages reuse one UUID session ID and the same agent memory.
-- `/new` attempts to stop the old compute session and creates a fresh session ID.
-- `/session` displays the current UUID; save it to resume later.
-- `/resume <UUID>` stops the current compute session and selects that conversation.
-  History loads on your next message; an unknown UUID starts empty.
-- `/exit`, Ctrl+C, or EOF exits and attempts to stop an invoked session.
-- Blank input is ignored. Invocation errors are printed and the loop continues.
+## Conversation commands
 
-The runtime reads saved events before inference and saves one event containing
-the successful user/assistant pair before returning the reply. Only a non-empty
-reply with Bedrock's `end_turn` completion reason is saved. Failed inference,
-token-limited or otherwise incomplete generation, and empty replies write nothing.
-A memory read/write error is surfaced, without
-a fallback to RAM. A write whose outcome is unknown, or a lost response, can
-leave a saved turn that the CLI did not display; retrying can create another turn.
+| Input | Behavior |
+| --- | --- |
+| A message | Send it using the current UUID session ID |
+| `/session` | Display the current session ID |
+| `/new` | Attempt to stop the old compute session and select a fresh UUID |
+| `/resume <UUID>` | Attempt to stop the current session and select saved history |
+| `/exit`, Ctrl+C, or EOF | Quit and attempt to stop the invoked compute session |
 
-Stopping compute does not delete memory. `/new` starts a separate conversation;
-`/resume` reuses the saved history for the configured actor and session ID.
-Events remain until their configured retention expires or you delete the Memory
-resource. Cleanup failure can leave compute running until its timeout.
-The agent has no automatic history limit or summarization, so long conversations
-can exceed the model's context window. No transcript files are created. The Memory resource must be provisioned
-separately; the application only reads and writes events. CloudWatch logs can still contain request text.
-See [AWS session behavior](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-sessions.html).
+History loads on the next message after `/resume`. An unknown UUID starts with
+empty history. `/new` does not delete previous events. Failed cleanup can leave
+compute running until timeout. Blank input is ignored, and request errors are
+printed without ending the conversation.
 
-## Connect Gateway tools
+## How a turn works
 
-The shared Lambda and Gateway setup is documented in
-[the runtime-status tool README](../tools/runtime_status/README.md). The Gateway
-and its Lambda target must be `READY` and use IAM authentication.
+```mermaid
+sequenceDiagram
+    actor You
+    box rgb(235, 245, 255) Local machine
+        participant CLI as Chat CLI on your Mac
+    end
+    box rgb(255, 245, 225) AWS Cloud
+        participant Runtime as AgentCore Runtime
+        participant Memory as Agent memory (AgentCore Memory)
+        participant Model as Inference model (Bedrock Nova Lite)
+        participant Gateway as AgentCore Gateway (MCP)
+        participant Tool as Runtime-status Lambda
+        participant Control as AgentCore control plane
+    end
 
-Run this self-contained block from either the repository root or `chat/`.
-The IDs below are the deployed resources used in this experiment; replace them
-if you create different resources.
+    You->>CLI: Type a message
+    CLI->>Runtime: Message + session ID
+    Runtime->>Memory: Restore this session's checkpoint
+    Memory-->>Runtime: Messages + workflow state
+    Runtime->>Gateway: Initialize MCP and discover tools (signed)
+    Gateway-->>Runtime: Tool descriptions and input schemas
+    Runtime->>Model: History + your new message + tool schemas
+    opt Model requests runtime status
+        Model-->>Runtime: Tool call + user-provided runtime ID
+        Runtime->>Gateway: Signed tool invocation
+        Gateway->>Tool: Invoke Lambda with runtime ID
+        Tool->>Control: GetAgentRuntime(runtime ID)
+        Control-->>Tool: Deployment status and version
+        Tool-->>Gateway: Tool result
+        Gateway-->>Runtime: MCP result
+        Runtime->>Model: Tool result
+    end
+    Note over Runtime,Memory: Input and tool steps are also checkpointed
+    Model-->>Runtime: Generate a reply
+    Runtime->>Memory: Save checkpoints as graph steps complete
+    Runtime-->>CLI: Return the reply and names of tools used
+    CLI-->>You: Display the reply
 
-```bash
-export AWS_PROFILE=default
-tools_gateway_id="agentcore-tools-j4l3ivunkl"
-tools_gateway_url=$(/usr/local/bin/aws bedrock-agentcore-control get-gateway \
-  --region eu-west-1 --gateway-identifier "$tools_gateway_id" \
-  --query gatewayUrl --output text)
-tools_gateway_arn=$(/usr/local/bin/aws bedrock-agentcore-control get-gateway \
-  --region eu-west-1 --gateway-identifier "$tools_gateway_id" \
-  --query gatewayArn --output text)
-chat_runtime_role_arn=$(/usr/local/bin/aws bedrock-agentcore-control get-agent-runtime \
-  --region eu-west-1 --agent-runtime-id testing_local_1-Pgyd5WH6O4 \
-  --query roleArn --output text)
+    Note over CLI,Memory: Follow-ups reuse the same session ID and history
 
-/usr/local/bin/aws iam put-role-policy \
-  --role-name "${chat_runtime_role_arn##*/}" \
-  --policy-name InvokeAgentCoreToolsGateway \
-  --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"bedrock-agentcore:InvokeGateway\",\"Resource\":\"$tools_gateway_arn\"}]}"
+    You->>CLI: /new or /exit
+    CLI->>Runtime: Stop the session
+    Note over Runtime,Memory: Compute stops, saved events remain until retention expires
 
-echo "$tools_gateway_url"
+    You->>CLI: /resume saved-session-ID, then a message
+    CLI->>Runtime: Message + saved session ID
+    Runtime->>Memory: Load saved conversation for actor + session
+    Memory-->>Runtime: History survives compute restart
 ```
 
-Replace the runtime ID if yours has changed. These commands grant the **chat
-runtime execution role** access to this Gateway; the local CLI needs no Gateway
-invocation permission. IAM policy changes require an authorized caller.
+The CLI sends `{"prompt":"..."}` and receives
+`{"reply":"...","tools_used":[...]}`. It displays a complete reply rather than
+streaming tokens, and prints `Tool: <name>` for completed tool calls, including
+tool-level errors.
 
-On the hosted runtime, add `AGENTCORE_GATEWAY_URL` using the printed URL and
-preserve the existing model, region, memory, and actor settings. Rebuild/push
-the chat image and update the runtime as described below. Pushing an image or
-changing a local `.env` does not update the hosted agent. The IAM-authenticated
-Gateway must be in `AWS_REGION`, which is `eu-west-1` in this experiment.
+The agent opens an IAM-signed MCP connection through LangChain's `MCPAdapter`
+and discovers callable tools. Nova receives short names; `get_runtime_status`
+maps back to `runtime-status___get_runtime_status`. FastMCP owns initialization,
+pagination, and tool protocol handling; our transport signs each request with
+current execution-role credentials. Alias collisions are rejected and HTTP
+connections close on exit or failed initialization. The MCP adapter API is beta.
 
-The agent opens an MCP connection for each turn, initializes it, discovers tools
-(including paginated results), and supplies their schemas to Bedrock Converse.
-When the model requests a tool, the agent signs the Gateway call with its
-execution-role credentials and returns the tool result to the model. The model
-then produces the final reply. Tools receive simple model-facing names:
-`get_runtime_status` maps back to
-`runtime-status___get_runtime_status` when calling Gateway. Duplicate short names
-are rejected. Nova's thinking blocks are removed from final displayed/saved replies.
-At most four tool calls run per turn. Unknown
-tools and Gateway transport/protocol failures abort the turn; tool-level errors
-are returned to the model so it can explain the failure. Tool responses are data,
-not instructions. Only the user's message and final reply are saved in memory;
-intermediate tool requests/results are kept within the current turn.
+`langchain.agents.create_agent` runs the loop with `ChatBedrockConverse`, the
+configured Nova model, temperature `0`, and a `3000`-token output limit.
+`CompletionGuard` validates responses inside the model node before they can be
+checkpointed. Only non-empty `end_turn` replies become final answers; thinking
+blocks and intermediate model text are removed. Incomplete generation, invalid
+calls, unknown aliases, and duplicate/missing tool-call IDs abort the step.
 
-After the deployed runtime and its `DEFAULT` endpoint are ready, run `uv run chat`
-from `chat/` and check:
+LangChain's `ToolCallLimitMiddleware(run_limit=4, exit_behavior="error")`
+allows at most four calls per request. Calls run sequentially. An excessive
+batch is rejected before executing any tool in that batch, although earlier
+batches may already have run. Tool-level errors return to the model as failed
+`ToolMessage`s; transport/protocol exceptions abort the request. `GatewayTools`
+middleware records original Gateway names for the CLI.
 
-- A greeting produces a normal reply without a tool call.
-- “Is the environment ready for runtime testing_local_1-Pgyd5WH6O4?” prints
-  `Tool: runtime-status___get_runtime_status` and explains the returned status.
-- “Check its status again” reuses the ID in conversation memory and calls the tool.
-- In a fresh conversation, “Is my runtime ready?” asks for an ID.
-- A nonexistent valid-format ID returns a tool failure without claiming `READY`.
+### Checkpoint memory and failed turns
 
-These are live model behavior checks, not guarantees from offline mocks.
-`READY` means deployment readiness; model/memory access can still fail separately.
-The status tool reads the latest runtime version, which may differ from `DEFAULT`.
-Nova tool generation uses temperature `0` and a `3000`-token output limit,
-following AWS guidance for invalid tool-use sequences. The limit allows room
-for tool-generation reasoning; the prompt still requests concise final replies.
-See [AWS Gateway MCP](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-using.html)
-and [Bedrock tool use](https://docs.aws.amazon.com/bedrock/latest/userguide/tool-use.html).
+`AgentCoreMemorySaver` stores LangGraph checkpoints in AgentCore Memory. The
+configured actor and CLI session UUID map to `actor_id` and `thread_id`.
+A checkpoint includes conversation messages, tool calls/results, and workflow
+state. LangGraph restores that state for follow-ups and `/resume`; the agent
+supplies only the new user message. No long-term memory strategies are enabled.
 
-## Create short-term memory
+Sessions without a LangGraph checkpoint start fresh, even if old user/assistant
+conversation events exist for that session. Those old events are ignored and
+expire through the existing retention policy. Existing checkpoints continue to
+provide history for follow-ups and `/resume`.
 
-This is a single-user experiment. `CHAT_ACTOR_ID` is set on the runtime, rather
-than accepted from a caller. Anyone allowed to invoke this runtime can resume a
-known session for that actor; this is not a multi-user authorization design.
-Use one CLI at a time per conversation. The process lock does not coordinate
-concurrent callers across separate compute sessions.
+This changes failure behavior: the input and completed earlier steps may be
+saved even when a request fails. A rejected incomplete model reply is never
+saved, but the pending user message and earlier tool exchanges may remain.
+An excessive tool proposal can be checkpointed before the limit middleware
+rejects execution. Memory errors surface without a fallback; synchronous
+checkpoint durability waits for writes before advancing to the next step.
 
-With `AWS_PROFILE` exported in your shell, create the resource
-once (these commands create a billable AWS resource):
+The application submits new prompts directly to LangGraph with its normal
+checkpoint behavior, including after a failed request. There is no separate
+unfinished-turn check or explicit workflow-recovery command. `/new` starts an
+empty thread and does not erase old checkpoints. Unknown writes or lost responses may leave saved work
+the caller did not see, and retrying a completed request can duplicate a turn.
+
+No LangSmith account or API key is required. The project does not enable tracing,
+and CLI/runtime configuration variables are unchanged.
+
+## Hosted configuration
+
+CDK sets these on the Runtime. The CLI neither reads nor forwards them, except
+that `AWS_REGION` is also independently required by the CLI.
+
+| Variable | Hosted use |
+| --- | --- |
+| `AWS_REGION` | Region for Bedrock, Memory, and Gateway requests |
+| `CHAT_MODEL` | Bedrock model or inference profile |
+| `AGENTCORE_MEMORY_ID` | Short-term Memory resource |
+| `CHAT_ACTOR_ID` | Stable actor for this single-user experiment |
+| `AGENTCORE_GATEWAY_URL` | IAM-authenticated Gateway MCP URL |
+
+The Runtime uses execution-role credentials through boto3's normal credential
+chain. Do not configure `AWS_PROFILE` on the hosted Runtime. The image excludes
+`.env`, and CDK wires Memory and Gateway permissions and identifiers.
+
+## Code map
+
+| File | Responsibility |
+| --- | --- |
+| `src/agent/cli.py` | Configuration, invocation, response closure, session commands, and error logging |
+| `src/agent/runtime.py` | SDK HTTP server and process lock around invocations |
+| `src/agent/agent.py` | Checkpointed LangChain agent and Bedrock model |
+| `src/agent/memory.py` | AgentCore checkpointer and session configuration |
+| `src/agent/middleware.py` | Completion checks, built-in tool limit, and executed-tool reporting |
+| `src/agent/gateway.py` | LangChain MCP adapter, tool aliases, and HTTP cleanup |
+| `src/agent/auth.py` | AWS SigV4 request signing with refreshed credentials |
+| `pyproject.toml` | Distribution `agentcore-chat`, package `agent`, and console scripts |
+| `Dockerfile` | Python 3.12 ARM64 container running `chat-runtime` on port 8080 |
+
+The process lock serializes requests only within one process. Use one caller per
+conversation; it does not provide distributed locking or per-user authorization.
+There is no history trimming, so long conversations can exceed model limits.
+For hosted code changes, [redeploy through CDK](../infra/README.md#deploy-or-update)
+and start a new session. Publishing an image alone does not update the Runtime.
+
+### Read the code in execution order
+
+Start with the request path rather than the framework internals:
+
+1. `cli.main` loads local configuration. `run_conversation` reads input,
+   `handle_session_command` handles slash commands, and `cli.ask` sends messages
+   to AWS. `Conversation` holds the selected session ID and cleanup state.
+2. `runtime.invoke` receives the message and session ID, validates them, and
+   calls `Chat.ask` under the process lock.
+3. `Chat.ask` bridges the synchronous Runtime handler to async `_ask`.
+   Read `_ask` as: open Gateway → discover tools → build agent → invoke → return
+   text. `_build_agent` contains the framework wiring.
+4. `Gateway.list_tools` gives the agent callable tools with short model names.
+   Connection lifecycle methods open and close MCP. Read `GatewayAuth.auth_flow`
+   in `auth.py` separately to understand how AWS authenticates each request.
+5. `Memory.config` connects the session UUID to a saved graph thread. LangGraph
+   performs persistence through `Memory.checkpointer`; there is no manual
+   transcript loader or writer.
+6. `CompletionGuard` validates model responses before persistence. Its helpers
+   separate response shape, final-answer cleanup, and tool-call validation.
+   The built-in limit bounds calls; `GatewayTools` records returned tool results
+   for the CLI display.
+
+| Term in the code | Meaning here |
+| --- | --- |
+| Agent / graph | The LangChain workflow alternating model and tool steps |
+| Checkpointer | Storage adapter that saves and restores workflow state |
+| Thread | One conversation, identified by the CLI's session UUID |
+| Middleware | Code LangChain calls around a model or tool step |
+| Tool alias | Short name shown to Nova, mapped to Gateway's full name |
+| `async` / `await` | Functions that can yield while waiting for network work; `asyncio.run` bridges from the synchronous entry point |
+
+Module and method docstrings explain the purpose and important side effects.
+Validation and cleanup are kept explicit because they determine what is saved,
+which tools execute, and whether connections or remote sessions remain open.
+
+## Verify the deployed application
+
+These checks call AWS and incur charges. Use `uv run chat` after deployment:
+
+1. Send a greeting and confirm a normal reply without a tool call.
+2. Provide a synthetic fact and confirm a follow-up recalls it.
+3. Save `/session`, exit, restart the CLI, and `/resume <UUID>`; confirm the fact
+   persists. Repeat after runtime compute restarts when checking persistence.
+4. Use `/new`; confirm the previous fact is not available.
+5. Ask for deployment status using the actual `RuntimeId` from CDK outputs.
+   Confirm `Tool: runtime-status___get_runtime_status` appears.
+6. Ask “Check its status again”; confirm it reuses the ID from history.
+7. In a fresh conversation, ask for status without an ID; the agent should ask
+   for one. A nonexistent valid-format ID should produce a tool failure, not a
+   claim that the runtime is `READY`.
+
+8. A rejected incomplete reply must never appear in saved assistant history.
+   After a failure, check a follow-up and use `/new` when fresh state is desired.
+
+The runtime-status tool takes an ID, not the CLI's ARN. See
+[its contract](../tools/runtime_status/README.md#tool-contract).
+
+## Troubleshooting
+
+Request and cleanup errors append to `error.log` in the working directory,
+including timestamp, session ID, and traceback. The CLI does not deliberately
+log prompts, replies, or credentials. Log files are ignored by Git.
+A generic AWS 500 cannot reveal a server exception that the SDK did not return;
+inspect `/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT`, especially
+`[runtime-logs]` streams, for the hosted exception.
+
+| Symptom | Check |
+| --- | --- |
+| Missing CLI environment variable | The three variables in `.env`, the working directory, and exported shell values |
+| Runtime invocation or cleanup denied | Local caller permissions on the new runtime ARN |
+| Missing hosted variable or Memory access failure | CDK Runtime settings and execution role; Memory must be active in the same region |
+| Gateway HTTP 403 | Runtime role's `bedrock-agentcore:InvokeGateway` permission |
+| No Gateway tools | Gateway and Lambda target readiness |
+| Lambda tool failure | Gateway role's invocation permission, Lambda's runtime-read permission, and the supplied ID |
+| `ResourceNotFoundException` from the tool | Use the actual `RuntimeId`; schema examples and retired IDs are not deployed resources |
+| Nova invalid tool-use sequence | Confirm short model-facing names, temperature `0`, and the `3000`-token output limit are deployed |
+| Model did not complete its reply | The reported stop reason, such as `max_tokens`; the rejected reply was not saved, but input/earlier steps may remain. Use `/new` if the thread is unfinished |
+
+If a Homebrew upgrade broke the Python environment, recreate only the generated
+virtual environment using uv-managed Python, from `chat/`:
 
 ```bash
-/usr/local/bin/aws bedrock-agentcore-control create-memory \
-  --name agentcore_chat_memory \
-  --event-expiry-duration 3 \
-  --region eu-west-1 \
-  --query 'memory.id' --output text
+uv python install 3.12
+uv venv --clear --python 3.12 --managed-python .venv
+uv sync --locked --managed-python
 ```
 
-Copy the returned ID into `AGENTCORE_MEMORY_ID` on the hosted runtime.
-For the terminal commands below, also export it explicitly:
+## Optional local HTTP check
 
-```bash
-export AGENTCORE_MEMORY_ID="YOUR_RETURNED_MEMORY_ID"
-```
+`chat-runtime` starts the SDK server locally. It still calls live Bedrock,
+Memory, and Gateway; this is not an offline check or hosted deployment test.
+Add the five hosted variables above to your local `.env` and use local
+credentials permitted to call the model, Memory, and Gateway.
 
-Set `CHAT_ACTOR_ID=ivan` in
-`chat/.env` for local HTTP testing and on the hosted runtime for deployment.
-Wait until the resource is `ACTIVE`:
-
-```bash
-/usr/local/bin/aws bedrock-agentcore-control get-memory \
-  --memory-id "$AGENTCORE_MEMORY_ID" \
-  --region eu-west-1 \
-  --query 'memory.status' --output text
-```
-
-The shell command needs the memory ID exported separately from `.env`.
-Three days is the minimum event retention. No long-term strategies are created;
-turns also use `extractionMode=SKIP`. History is loaded with pagination and sorted
-by event time. There is no context trimming, so keep learning sessions short.
-See [AWS short-term memory](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/memory-types.html).
-
-To verify: tell the agent a synthetic fact, save `/session`, exit, restart the
-runtime, then `/resume <UUID>` and ask about the fact. `/new` should not recall
-it. Use synthetic data: messages now persist in AWS beyond compute shutdown.
-
-For cleanup, delete the Memory resource separately from the runtime:
-
-```bash
-/usr/local/bin/aws bedrock-agentcore-control delete-memory \
-  --memory-id "$AGENTCORE_MEMORY_ID" \
-  --region eu-west-1
-```
-
-This permanently removes the resource and its conversation data; stopping the
-runtime alone does not perform this cleanup.
-
-## Local HTTP check
-
-This runs the AgentCore SDK server locally while still calling Bedrock for
-inference. It does not test hosted AgentCore deployment. Set `AWS_REGION` and
-`CHAT_MODEL`, `AGENTCORE_MEMORY_ID`, `CHAT_ACTOR_ID`, and `AGENTCORE_GATEWAY_URL`
-in `chat/.env` and use local AWS credentials with model, memory, and Gateway access:
+From `chat/`:
 
 ```bash
 uv run chat-runtime
 ```
 
-The server binds to port 8080. In another terminal:
+In another terminal:
 
 ```bash
 curl http://localhost:8080/ping
 curl http://localhost:8080/invocations \
   -H 'Content-Type: application/json' \
   -H 'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id: 11111111-1111-4111-8111-111111111111' \
-  -d '{"prompt":"My name is Ivan. Reply briefly."}'
-curl http://localhost:8080/invocations \
-  -H 'Content-Type: application/json' \
-  -H 'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id: 11111111-1111-4111-8111-111111111111' \
-  -d '{"prompt":"What is my name?"}'
+  -d '{"prompt":"Remember the synthetic tag blue-kite."}'
 ```
 
-The same session ID preserves context; a different ID starts with empty memory.
-Restarting the local server preserves saved events in AgentCore Memory. The CLI targets hosted
-AgentCore, so use HTTP requests for this local check. Invocations incur Bedrock and AgentCore Memory
-charges. This server is for local experimentation.
+Reuse the header's UUID for follow-ups; change it for empty history.
+The local HTTP server is a diagnostic entry point; `uv run chat` remains the
+normal interface for checking the deployed agent.
 
-## Deploy the container
-
-The [AWS container deployment guide](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/getting-started-custom.html)
-requires ARM64 Linux and an HTTP server on port 8080 with `/ping` and
-`/invocations`. The Dockerfile starts `/app/.venv/bin/chat-runtime`, whose entry
-point is `agent.runtime:main`.
-
-### 1. Set up your shell
-
-Run from `chat/`, with Docker running and AWS CLI installed. These tools do not
-load `.env`; export your profile and deployment region in the terminal:
-
-```bash
-export AWS_PROFILE=default
-export AWS_REGION=eu-west-1
-export CHAT_ACCOUNT_ID="$(/usr/local/bin/aws sts get-caller-identity --region eu-west-1 --query Account --output text)"
-export CHAT_ECR_HOST="$CHAT_ACCOUNT_ID.dkr.ecr.eu-west-1.amazonaws.com"
-export CHAT_IMAGE_URI="$CHAT_ECR_HOST/agentcore-chat:latest"
-```
-
-### 2. Create the ECR repository
-
-Run once; skip if `agentcore-chat` already exists in this region:
-
-```bash
-/usr/local/bin/aws ecr create-repository \
-  --repository-name agentcore-chat \
-  --region eu-west-1
-```
-
-### 3. Build and push the image
-
-```bash
-/usr/local/bin/aws ecr get-login-password --region eu-west-1 |
-  docker login --username AWS --password-stdin "$CHAT_ECR_HOST"
-
-docker buildx build \
-  --platform linux/arm64 \
-  -t "$CHAT_IMAGE_URI" \
-  --push .
-
-/usr/local/bin/aws ecr describe-images \
-  --repository-name agentcore-chat \
-  --image-ids imageTag=latest \
-  --region eu-west-1 \
-  --query 'imageDetails[0].imageDigest' --output text
-
-echo "$CHAT_IMAGE_URI"
-```
-
-The final commands confirm the uploaded image and print its URI for deployment.
-`CHAT_ECR_HOST` is only the registry hostname; include `agentcore-chat` once in
-the image URI to avoid the incorrect `agentcore-chat/agentcore-chat` path.
-
-### 4. Deploy the AgentCore runtime
-
-In the AWS console, select the same region and open **Bedrock AgentCore →
-Runtime**:
-
-1. Create a runtime using the ECR image URI printed above and the HTTP protocol.
-2. Select an execution role with the [runtime permissions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html)
-   and Bedrock model access described in Setup. Use IAM authentication for this CLI.
-3. Set runtime environment variables `AWS_REGION=eu-west-1` and
-   `CHAT_MODEL=eu.amazon.nova-lite-v1:0` (or your chosen region/model), plus
-   `AGENTCORE_MEMORY_ID` and `CHAT_ACTOR_ID` from the memory setup above, and
-   `AGENTCORE_GATEWAY_URL` from Gateway setup. The execution role also needs
-   `bedrock-agentcore:InvokeGateway` on that Gateway.
-4. Deploy, wait until the runtime and its `DEFAULT` endpoint are ready, and copy
-   the runtime ARN.
-
-The hosted runtime uses its execution role; do not configure `AWS_PROFILE` or
-copy local credentials into the image.
-
-### 5. Connect the CLI
-
-Set `AGENTCORE_RUNTIME_ARN` to the copied ARN in `chat/.env`, keeping your local
-`AWS_PROFILE` and matching `AWS_REGION`, then run:
-
-```bash
-uv run chat
-```
-
-For later changes, repeat step 3, then update the existing runtime to create a
-new version using the pushed image and wait for its `DEFAULT` endpoint to be
-ready. Pushing the image alone does not update the running agent. Start a fresh
-conversation with `/new` or restart the CLI.
-
-## Code and verification
-
-| File | Responsibility |
-| --- | --- |
-| `src/agent/agent.py` | Bedrock Converse calls using retrieved history |
-| `src/agent/cli.py` | Environment setup, invocation, terminal loop, session reset/cleanup |
-| `src/agent/runtime.py` | AgentCore SDK HTTP entry point and process lock |
-| `src/agent/memory.py` | Paginated event reads and successful-turn writes |
-| `src/agent/gateway.py` | Signed MCP initialization, paginated discovery, and tool execution |
-| `pyproject.toml` | Package and console entry points: `agent.cli:main` and `agent.runtime:main` |
-
-Memory is scoped by resource ID, configured actor ID, and `context.session_id`.
-The runtime serializes invocations within one process. Automated test files
-are deferred. The user confirmed the deployed chat and Gateway tool work through
-`uv run chat` on 2026-10-04. The acceptance checks above cover additional behavior;
-that confirmation does not establish that every failure/isolation case passed.
-Future source changes still require rebuilding and updating the hosted runtime.
-
-## Runtime errors
-
-If `uv run chat` reports a broken Python installation after a Homebrew upgrade,
-recreate the generated virtual environment using uv-managed Python. Run from
-`chat/` (this replaces `.venv`, not source or configuration):
-
-```bash
-uv python install 3.12
-uv venv --clear --python 3.12 --managed-python .venv
-uv sync --locked --managed-python
-uv run chat
-```
-
-`uv run chat` appends SDK and other request errors to `error.log` in the current
-working directory (`chat/error.log` when run from `chat/`). Entries include a
-timestamp, session ID, exception message, and CLI traceback. Session cleanup
-failures are logged too. The terminal still displays the error and keeps chatting.
-Log files are ignored by Git; prompts, replies, and credentials are not deliberately
-logged.
-
-The file contains the error returned by the AWS SDK. If AWS returns only a generic
-500, it cannot reveal the server's internal exception; that detail still requires
-the runtime CloudWatch logs.
-
-`KeyError: 'AGENTCORE_MEMORY_ID'` or `'CHAT_ACTOR_ID'` means hosted memory
-configuration is missing. Memory access errors require checking the execution
-role permissions and that the resource is active in the configured region.
-
-`KeyError: 'AGENTCORE_GATEWAY_URL'` means the hosted Gateway configuration is
-missing. Gateway HTTP 403 errors require checking the runtime role's
-`bedrock-agentcore:InvokeGateway` permission. Lambda tool errors require checking
-the Gateway role's Lambda invocation permission and Lambda's runtime-read
-permission separately.
-
-For Nova's `Model produced invalid sequence as part of ToolUse` error, confirm
-the deployed image includes the model-facing tool aliases, temperature `0`, and
-`3000`-token settings in `agent.py`. A live synthetic agent check reproduced
-this error with `runtime-status___get_runtime_status` and succeeded with
-`get_runtime_status`. Gateway execution still uses the full prefixed name.
-Rebuild/push the image and update the runtime to apply source changes.
-This model-generation error is separate from Gateway/Lambda IAM permissions.
-See [AWS Nova tool troubleshooting](https://docs.aws.amazon.com/nova/latest/userguide/tools-troubleshooting.html).
-
-For HTTP 500 errors, inspect the CloudWatch log group
-`/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT`, especially streams
-containing `[runtime-logs]`. Invocation request logs alone do not show the Python
-exception. See [AWS troubleshooting](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-troubleshooting.html).
-
-`KeyError: 'CHAT_MODEL'` means the hosted runtime is missing that environment
-variable. The local `.env` is neither included in the image nor forwarded by the
-CLI. Set the model and region on the runtime, wait for its update, then start a
-fresh session. For Bedrock access errors, check the execution role's model and
-inference-profile permissions separately from the local caller's runtime access.
+References: [AgentCore checkpoint integration](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/memory-integrate-lang.html),
+[LangChain MCP](https://docs.langchain.com/oss/python/langchain/mcp),
+[Runtime permissions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html),
+[LangChain agents](https://docs.langchain.com/oss/python/langchain/agents),
+[LangChain middleware](https://docs.langchain.com/oss/python/langchain/middleware/custom),
+[Session behavior](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-sessions.html),
+[Nova tool troubleshooting](https://docs.aws.amazon.com/nova/latest/userguide/tools-troubleshooting.html).

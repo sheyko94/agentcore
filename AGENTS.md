@@ -1,163 +1,193 @@
 # Project guidance for agents
 
-Read this file at the start of conversations in this repository. Inspect the
-relevant source before changing behavior and keep this guidance current.
-The user's current instructions take precedence.
+Read this file when starting work in the repository. Inspect the relevant source
+before changing behavior. The user's current instructions take precedence.
 
 ## Goal and scope
 
-Experiment with Amazon Bedrock AgentCore using a minimal text conversation:
-the user asks, the agent replies, and follow-ups reuse short-term agent memory.
-Keep the implementation small. One shared runtime-status Lambda tool is exposed
-through AgentCore Gateway. No RAG, UI, summaries, long-term
-memory strategies, or new voice work is needed unless the user changes the scope.
+Keep the AgentCore experiment small: a text conversation, short-term Memory,
+Bedrock inference, and one shared runtime-status Lambda tool through Gateway.
+No RAG, UI, summaries, long-term memory strategies, or new voice work unless
+requested. `voice/` is local-only, ignored, and excluded from commits and pushes.
+If explicitly working there, read its local `AGENTS.md`; do not track its files
+unless the user resumes that project and asks to do so.
 
-The active project is `chat/`. The preserved voice prototype is local-only in
-`voice/`, ignored by Git and excluded from pushes. If present, read its local
-`voice/AGENTS.md` when working there. Do not include voice files in a commit
-unless the user explicitly resumes that project and asks to track it.
+## Documentation ownership
 
-## Layout and entry points
+- `README.md`: project purpose, architecture, scope, and component links.
+- `chat/README.md`: chat behavior, configuration, run commands, checks, and troubleshooting.
+- `infra/README.md`: resources, build/deployment order, caller setup, deploy/update/destroy commands.
+- `tools/README.md`: shared-tool organization and entry points.
+- `tools/runtime_status/README.md`: tool contract, verification, and optional ZIP packaging.
+- `AGENTS.md`: implementation constraints and verified status for agents.
 
-- `infra/`: Python CDK project with uv lockfile and a pinned local Node CDK CLI.
-  `stack.py` wires service definitions in `services/`: `agentcore.py` contains
-  Memory, Runtime, and Gateway; other files contain Lambda, IAM, ECR assets,
-  and CloudWatch. It provisions all application resources
-  from scratch, packages existing source, and wires IAM/environment settings.
-  `cdk.json` targets account `781356123457`, `eu-west-1`. Memory starts empty with
-  three-day event retention and is deleted with the stack; no existing resource
-  IDs or import/reuse mode.
-  Follow `infra/README.md`; do not silently replace or delete manual resources.
+Keep commands in their component README and link to them elsewhere. Keep
+technical diagrams with the component they explain. Use actual CDK outputs in
+instructions; retired resource IDs and schema examples are not working targets.
+CDK is the deployment workflow; do not reintroduce competing manual provisioning
+instructions without a user request.
 
-- `tools/runtime_status/`: shared Lambda source, SDK requirements, and Gateway
-  tool schema for `get_runtime_status`. It takes a required `runtime_id` tool
-  argument supplied by the user and reads that runtime's deployment
-  status, not chat health. The user confirmed the deployed chat → Gateway → Lambda
-  flow working through `uv run chat` on 2026-10-04.
-- Package the shared Lambda with the terminal commands in its README using
-  `uv pip install` and `zip` (Python 3.12 ARM64 target). No build script is needed.
-- Shared tools live outside `chat/` and `voice/` so either agent can call them
-  through Gateway without importing the other's application code.
-- `chat/src/agent/agent.py`: boto3 Bedrock Converse call and one conversation's
-  retrieved history, Gateway tool schemas, and a loop capped at four tool calls.
-  Save only the user message and valid final reply; tool exchanges are not saved.
-  Expose short tool names to Nova and map them back to Gateway's prefixed names.
-  Reject alias collisions and remove Nova thinking blocks from final replies.
-- `chat/src/agent/gateway.py`: MCP initialization, paginated tool discovery,
-  and calls signed with the runtime's normal credentials. Close HTTP on exit.
-- `chat/src/agent/memory.py`: AgentCore short-term event reads/writes; paginate
-  history and store each user/assistant pair in one event.
-- `chat/src/agent/cli.py`: local terminal UI calling the deployed AgentCore
-  `DEFAULT` endpoint, with `/new`, `/exit`, and remote session cleanup.
-- `chat/src/agent/runtime.py`: `BedrockAgentCoreApp`, conversations keyed by
-  session ID passed to memory, and a process lock serializing invocations.
-- `chat/pyproject.toml`: distribution `agentcore-chat`, Python package `agent`,
-  console scripts `chat = agent.cli:main` and `chat-runtime = agent.runtime:main`.
-- `chat/Dockerfile`: ARM64 runtime container, port 8080, installed `chat-runtime`.
-- `chat/`: Python >=3.12 uv project with its own lockfile. The local-only `voice/`
-  project has separate dependencies; do not add audio libraries or Swift to chat.
-- `chat/.python-version`: selects Python 3.12, matching Docker. Use uv-managed
-  Python for the local environment to avoid broken Homebrew interpreter links.
-- [README.md](README.md): orientation; [chat/README.md](chat/README.md): setup,
-  deployment, and troubleshooting; [docs/chat-flow.md](docs/chat-flow.md): diagram.
+## Chat: source and configuration
 
-## Commands and configuration
+`chat/` is a Python >=3.12 uv project with its own lockfile and `.python-version`
+selecting 3.12. Use uv-managed Python to avoid broken Homebrew links.
+Distribution: `agentcore-chat`; import package: `agent`. Do not reintroduce
+`agentcore_chat`. Console scripts are `chat = agent.cli:main` and
+`chat-runtime = agent.runtime:main`. The Dockerfile builds ARM64 Linux and serves
+HTTP on port 8080. Do not add audio libraries or Swift dependencies.
 
-From the repository root:
+| Source | Responsibility and constraints |
+| --- | --- |
+| `chat/src/agent/cli.py` | Invoke `DEFAULT`, keep a UUID per conversation, `/new` / `/session` / `/resume` / `/exit`, close response bodies, and attempt remote session cleanup |
+| `chat/src/agent/runtime.py` | `BedrockAgentCoreApp`, require the context's session ID, and serialize invocations with a process lock |
+| `chat/src/agent/agent.py` | Run checkpointed LangChain `create_agent` with `ChatBedrockConverse` and return the final reply |
+| `chat/src/agent/middleware.py` | Validate responses before checkpoints, native four-call limit, and original-name tool reporting |
+| `chat/src/agent/memory.py` | `AgentCoreMemorySaver` and actor/thread configuration |
+| `chat/src/agent/gateway.py` | LangChain `MCPAdapter`/FastMCP, short tool aliases, and HTTP cleanup |
+| `chat/src/agent/auth.py` | Sign Gateway HTTP requests with fresh execution-role credentials using AWS SigV4 |
 
-```bash
-uv python install 3.12
-uv sync --project chat --locked --managed-python
-uv run --directory chat chat
-# Only if the ignored local voice project is present:
-uv run --directory voice brainstorm
-```
+Configuration is supplied by the user or CDK. Keep direct `os.environ` reads;
+do not add defaults, custom environment validation, or CLI overrides.
+The CLI reads only `AWS_PROFILE`, `AWS_REGION`, and `AGENTCORE_RUNTIME_ARN`.
+The Runtime reads `AWS_REGION`, `CHAT_MODEL`, `AGENTCORE_MEMORY_ID`,
+`CHAT_ACTOR_ID`, and `AGENTCORE_GATEWAY_URL`; the CLI does not forward them.
+`.env` loads from the working directory without overriding shell values.
+`chat/.env.example` documents only the CLI settings.
 
-Inside `chat/`, use `uv run chat`. This invokes AWS, so it is not an offline
-smoke check. `chat-runtime` is the container's server entry point; optional local
-HTTP diagnostics are documented in the chat README.
+Use boto3's normal credential chain in the hosted Runtime. Never require a local
+AWS profile there or bake credentials/configuration into the image. Gateway
+uses IAM authentication, resides in `AWS_REGION`, and requires Runtime-role
+`bedrock-agentcore:InvokeGateway` permission on its ARN.
 
-The user supplies configuration; use direct `os.environ` reads without defaults,
-custom environment validation, or CLI overrides. The local CLI reads
-`AWS_PROFILE`, `AWS_REGION`, and `AGENTCORE_RUNTIME_ARN`. The runtime reads
-`AWS_REGION`, `CHAT_MODEL`, `AGENTCORE_MEMORY_ID`, `CHAT_ACTOR_ID`, and
-`AGENTCORE_GATEWAY_URL`; these
-runtime settings are not sent by the CLI.
-The Gateway uses IAM authentication; grant the runtime role
-`bedrock-agentcore:InvokeGateway` on its ARN and use a Gateway in `AWS_REGION`.
-Local `.env` files load from the working directory without overriding shell
-variables. `chat/.env.example` has example values, not application defaults.
+### Behavior to preserve
 
-Hosted runtime credentials come from its execution role. Use boto3's normal
-credential chain in the runtime; do not require a local AWS profile there or
-bake credentials/configuration files into an image. Configure the hosted model
-and region in AgentCore. Deployment commands are in `chat/README.md`.
+LangChain owns model/tool orchestration. `CompletionGuard` validates Bedrock
+`stopReason` inside the async model-call wrapper before the model node can
+checkpoint a response; strip final thinking and intermediate model text there.
+Use native `ToolCallLimitMiddleware(run_limit=4, exit_behavior="error")` and
+sequential tool tasks (`max_concurrency=1`). An excessive batch executes no tools
+in that batch. `GatewayTools` records full Gateway names after tool handlers return.
+MCP tools are real adapter tools; preserve tool-level error status and propagation
+of transport/protocol failures. The current MCP namespace is beta and uses FastMCP
+4 with httpx2; retain initialization-based transport and sign requests individually.
 
-Prefer the CDK workflow in `infra/README.md` for new infrastructure deployments.
-From `infra/`, use `uv sync --locked --managed-python`, `npm ci`, and
-`npx cdk synth --quiet` for local validation. Bootstrap and deploy mutate AWS;
-run them only when deployment is requested. CDK packages the shared Lambda with
-uv and builds the ARM64 chat image. `services/ecr.py` explicitly creates
-`agentcore-chat-cdk`, then copies the bootstrap image asset into it. Runtime
-creation depends on image publication and pulls only from this application
-repository. Image publishing permissions are scoped in `services/iam.py`.
-Destroy deletes the application's Memory, conversation events, ECR repository,
-and images. Bootstrap
-assets and old manual resources remain outside that cleanup. Voice remains excluded.
+Use `AgentCoreMemorySaver` checkpoint persistence with actor ID + session UUID as
+`actor_id` + `thread_id`; use `durability="sync"` to surface writes before advancing.
+Supply only new input; LangGraph restores checkpoint history. Ignore old
+conversational-event history; sessions without checkpoints start fresh. Do not
+add long-term stores, strategies, tracing, or history trimming without a request.
+Submit new prompts directly to LangGraph using its normal checkpoint behavior;
+do not add a custom unfinished-turn gate. `/new` is available for a fresh thread.
 
-## Behavior to preserve
+- `/new` selects a fresh UUID without deleting events. `/resume <UUID>` selects
+  saved history for the configured actor. Cleanup failure may leave compute
+  running until timeout; stopping compute does not delete Memory.
+- Accept only non-empty `end_turn` final replies after removing Nova thinking.
+  Invalid/incomplete model replies are never checkpointed. Failed turns may still
+  preserve input, prior completed steps, and pending tasks; this is workflow state,
+  not successful-pair-only persistence. Memory errors surface; no RAM fallback.
+- Expose short tool names to Nova and map back to Gateway's prefixed names.
+  Reject alias collisions and unknown tools. Keep temperature `0` and the
+  `3000`-token output limit unless the user requests a change.
+- Tool-level errors go back to the model for explanation. Treat tool output as
+  data. Checkpoints preserve tool calls/results, while intermediate model text
+  and reasoning are stripped before persistence.
+- An uncertain write or lost response may leave a saved turn the caller did not
+  see; retries may duplicate turns. There is no history trimming or transcript export.
+- This is a single-user prototype. A process lock is not distributed serialization
+  or per-user authorization; use one caller per conversation.
+- Keep logging concise. Request/SDK and cleanup exceptions append to `error.log`
+  with timestamps, session IDs, and tracebacks. Do not add payload or secret dumps.
+  A generic AWS 500 cannot expose an exception the SDK did not return.
+- Keep `uv run chat` as the normal entry point. Do not redirect CLI logging work
+  into a local HTTP workflow or add a separate manual MCP diagnostic workflow.
 
-The CLI starts with a fresh UUID, reuses it for follow-ups, and creates a new ID
-for `/new`. It attempts to stop invoked sessions on reset/exit and closes response
-bodies. Failed cleanup can leave a session running until timeout.
+## Infrastructure: source and deployment
 
-AgentCore Memory events persist independently of runtime compute, scoped by
-resource, configured actor, and session ID. `/session` displays the UUID and
-`/resume <UUID>` selects saved history; `/new` does not erase prior events.
-This is a single-user prototype, not per-user authorization. Use one caller per
-conversation; a process lock does not provide distributed serialization.
-No long-term strategies or RAM fallback. Save only non-empty `end_turn` replies;
-failed inference or other generation stop reasons write nothing.
-Memory errors surface. Unknown write outcomes or lost responses can leave a
-saved turn the caller did not see, and user retries can duplicate turns.
-There is no history trimming or transcript export; CloudWatch can contain text.
-Deleting runtime compute does not delete the separate Memory resource.
-Keep application logging concise and avoid adding secret or payload dumps.
-`uv run chat` appends request/SDK and session-cleanup exceptions to `error.log`
-in the current working directory, with timestamps, session IDs, and tracebacks.
-Log files are ignored by Git. Keep the normal CLI as the user's entry point;
-do not redirect CLI error logging work into a local HTTP debugging workflow.
-A generic AWS 500 cannot expose a server exception the SDK did not return.
+`infra/` is a Python CDK uv project with a pinned local Node CDK CLI. `app.py`
+selects the environment; `stack.py` wires the service definitions and outputs.
+`cdk.json` currently targets account `781356123457`, `eu-west-1`,
+`eu.amazon.nova-lite-v1:0`, and actor `ivan`.
+
+| Source | Responsibility |
+| --- | --- |
+| `infra/services/agentcore.py` | Memory, IAM-authenticated MCP Gateway/target, HTTP Runtime, and hosted environment |
+| `infra/services/lambda_service.py` | Existing handler + SDK packaging via local uv, targeting Python 3.12 ARM64 |
+| `infra/services/iam.py` | Tool/Gateway/Runtime execution roles, model access, scoped image publishing, logs, and metrics |
+| `infra/services/ecr.py` | Create `agentcore-chat-cdk`, build the chat image, and copy the bootstrap image asset into the application repository |
+| `infra/services/cloudwatch.py` | Seven-day tool/runtime log retention and cleanup |
+
+Provision application resources from scratch; no import/reuse mode or hardcoded
+existing resource IDs. Memory starts empty, retains events for three days, and
+is deleted with the stack. Runtime creation/update depends on image publication
+and the Gateway target. Image tags use source hashes. Runtime pulls from the
+application repository, not directly from bootstrap staging.
+
+Hosted source changes require an image rebuild and Runtime update; pushing an
+image alone is insufficient. Use CDK redeployment rather than console edits to
+stack-managed resources. Model IAM resources cover Nova Lite; changing the model
+also requires revisiting those ARNs.
+
+Caller setup is separate from the application stack. Bootstrap requires an
+authorized profile; deployment requires permission to assume the four bootstrap
+deployment, file-publishing, image-publishing, and lookup roles. The CLI caller
+also needs invocation and cleanup access on the new Runtime ARN.
+
+Destroy removes application Memory/events, ECR repository/images, Runtime,
+Gateway/target, tool Lambda, execution roles, and configured application log groups.
+Bootstrap assets and deployment helpers' own logs remain outside that cleanup.
+Do not silently replace/delete manual or shared bootstrap resources.
+
+## Shared tools
+
+`tools/runtime_status/handler.py` implements `get_runtime_status` using
+`bedrock-agentcore-control:GetAgentRuntime`. `requirements.txt` packages the SDK;
+`tool-schema.json` defines the Gateway input/output contract. Shared tools stay
+outside application packages and are called through Gateway.
+
+Require `runtime_id` from the user or conversation, and ask if missing. Do not
+invent IDs. This is deployment status for the latest version, not chat health or
+necessarily the version served by `DEFAULT`. Return only ID, name, status, and
+version; propagate SDK errors. Gateway invokes Lambda with its own role, while
+Lambda's role has read-only runtime access.
+
+CDK packages the tool. For optional standalone packaging, use the README's
+`uv pip install` and `zip` commands for Python 3.12 ARM64. No build script is needed.
 
 ## Verification and maintenance
 
 Automated test files remain deferred unless requested. Use focused offline
-checks for configuration wiring, multi-turn memory, failed-turn behavior,
-session reset/isolation, and cleanup. Do not mistake imports or local HTTP
-checks for a verified deployment. Report live AWS verification separately.
+checks for multi-turn Memory, failed/incomplete turns, tool aliases and limits,
+session reset/isolation, response closure, and cleanup. Imports and local HTTP
+checks do not verify deployment. Report offline and live AWS checks separately.
 
-The user confirmed the manual chat and Gateway tool working on 2026-10-04,
-using `testing_local_1-Pgyd5WH6O4` in `eu-west-1`. That manual Runtime, Memory,
-Gateway/target, Lambda, ECR repository, four experiment roles and two customer
-policies were deleted later that day for the CDK migration. Their four remaining
-CloudWatch groups and all three related log deliveries, sources, and destinations
-were also deleted and verified absent. The shared CDK bootstrap repository was preserved.
-The user confirmed successful CDK deployment on 2026-10-04. Live chat, memory,
-and Gateway acceptance checks for the CDK deployment remain pending.
-The caller needed a separate IAM policy allowing `sts:AssumeRole` on the four
-CDK bootstrap deployment, file-publishing, image-publishing, and lookup roles.
-This caller setup is outside the application stack and precedes deployment.
-The previous live confirmation does not establish that
-every failure, restart/resume, or session-isolation case was tested. The chat
-README contains acceptance checks. Future source changes require an image rebuild
-and runtime update; pushing the image alone is insufficient. Do not redeploy
-unless the user requests it, or reintroduce the old `agentcore_chat` package path.
+From `infra/`, local validation is `uv sync --locked --managed-python`, `npm ci`,
+and `npx cdk synth --quiet`. Synthesis may download packages but creates no AWS
+resources. Bootstrap, deploy, and destroy mutate AWS; run them only when requested.
+Documentation work alone does not authorize cloud changes. After integration,
+verify Gateway tools through `uv run chat` using the chat README acceptance checks.
 
 Verify current official AWS documentation before changing API/runtime assumptions.
-Keep generated files, `.env`, `.venv/`, session artifacts, and AWS secrets out of
-Git. Avoid reading private configuration or recordings unless needed. Preserve
-unrelated user changes; untracked files are not disposable. Documentation review
-alone does not authorize cloud deployments or resource changes.
+Keep `.env`, `.venv/`, logs, session artifacts, generated outputs, and AWS secrets
+out of Git. Avoid reading private configuration or recordings unless needed.
+Preserve unrelated user changes and untracked files. Keep these instructions and
+the relevant README current when behavior changes.
 
-Test Gateway tools through the chat agent with `uv run chat` after integration.
-Do not add a separate manual MCP diagnostic workflow unless the user asks.
+This is a learning project. Prefer short methods named after their responsibility
+and document their purpose, ordering, and important effects. `Chat._ask` should
+show the request flow, with agent construction in a named helper. Keep terminal
+command dispatch in `handle_session_command`, model reply
+and tool-call checks in `CompletionGuard`, and IAM signing in `auth.py`. Avoid
+extra general-purpose abstractions or new layers for small constants/functions.
+
+## Verification status
+
+The user confirmed the manual chat/Memory/Gateway flow on 2026-10-04. That manual
+application and its experiment IAM resources, log groups, and log-delivery
+records were deleted for the CDK migration; shared bootstrap resources were kept.
+The user confirmed successful CDK deployment on 2026-10-04 after configuring
+caller bootstrap-role permissions. The earlier manual verification does not
+establish that all CDK chat, persistence/resume, tool-error, and isolation
+acceptance checks passed; complete live acceptance remains pending.
+The LangChain/MCP/checkpoint migrations have offline verification only; their
+rebuilt Runtime has not been deployed or checked against live AWS.

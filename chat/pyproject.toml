@@ -11,6 +11,12 @@ dependencies = [
   "boto3>=1.43.104,<2",
   "bedrock-agentcore>=1,<2",
   "python-dotenv>=1.2,<2",
+  "langchain[mcp]>=1.4,<2",
+  "langchain-aws>=1,<2",
+  "langgraph-checkpoint-aws>=1,<2",
+  "fastmcp>=4,<5",
+  "httpx2>=2,<3",
+  "anyio>=4,<5",
 ]
 
 [project.scripts]

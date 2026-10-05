@@ -1,101 +1,120 @@
 # AgentCore playground
 
-A minimal text chat for experimenting with Amazon Bedrock AgentCore. The CLI
-runs on your Mac; the Python agent runs in AWS, keeps the current conversation
-in agent memory, and calls a Bedrock inference model for each reply.
+A small project for learning Amazon Bedrock AgentCore through a text conversation.
+You ask questions in a local Python CLI; an agent hosted in AWS replies using
+Amazon Nova Lite, remembers follow-ups through short-term Memory, and can call
+one shared tool through Gateway.
 
-The active experiment is `chat/`. The earlier voice prototype is preserved
-locally in `voice/`, which is ignored by Git and not included in this repository.
+The experiment focuses on Runtime, Memory, Gateway, and the IAM permissions
+connecting them. It has no RAG, UI, summaries, or long-term memory strategies.
+The earlier voice prototype remains local-only in the ignored `voice/` folder.
 
-| Directory | Purpose |
-| --- | --- |
-| [chat/](chat/README.md) | Text CLI, agent, and AgentCore runtime |
-| [infra/](infra/README.md) | Python CDK deployment for the chat and shared tool |
-| [tools/runtime_status/](tools/runtime_status/README.md) | Shared Lambda tool for inspecting runtime deployment status |
-| [docs/](docs/chat-flow.md) | Mermaid diagram separating the local machine from AWS Cloud |
-| [AWS architecture](docs/aws-architecture.md) | Colored service boundaries, IAM roles, and CDK deployment flow |
+## How the project fits together
 
-## Start a chat
+- **Chat CLI:** runs on your machine and sends messages with a conversation ID.
+- **AgentCore Runtime:** runs the Python agent in an ARM64 container.
+- **LangChain:** runs the model/tool loop inside the container using Bedrock Converse.
+- **AgentCore Memory:** stores LangGraph conversation/workflow checkpoints independently of runtime compute.
+- **Amazon Bedrock:** generates replies with the configured Nova Lite inference profile.
+- **AgentCore Gateway:** exposes the runtime-status Lambda as an IAM-authenticated MCP tool.
+- **CDK infrastructure:** builds, provisions, and connects the application resources.
 
-For infrastructure setup and future deployments, use [the CDK guide](infra/README.md).
-It packages the Lambda and chat image, configures permissions, and deploys the
-Runtime and Gateway. The manual AWS commands remain reference instructions.
+```mermaid
+flowchart LR
+    subgraph LOCAL["Local machine"]
+        CLI["Chat CLI<br/>uv run chat<br/>AWS profile + session ID"]
+    end
 
-Requires `uv`, uv-managed Python 3.12, an AWS profile, and a deployed chat runtime. Run from
-the repository root:
+    subgraph CLOUD["AWS Cloud"]
+        subgraph ACCOUNT["AWS account 781356123457"]
+            subgraph REGION["Region eu-west-1"]
+                subgraph AC["Amazon Bedrock AgentCore"]
+                    RUNTIME["Runtime<br/>Python agent · ARM64<br/>DEFAULT endpoint"]
+                    MEMORY[("Memory<br/>Workflow checkpoints<br/>actor + session · 3-day retention")]
+                    GATEWAY["Gateway · MCP<br/>IAM authentication<br/>runtime-status target"]
+                    CONTROL["AgentCore control API<br/>GetAgentRuntime<br/>Latest deployment status"]
+                end
+                PROFILE["Amazon Bedrock<br/>EU inference profile<br/>eu.amazon.nova-lite-v1:0"]
+                TOOL["AWS Lambda<br/>get_runtime_status<br/>Python 3.12 · ARM64"]
+                LOGS["Amazon CloudWatch Logs<br/>Runtime + Lambda logs<br/>7-day retention"]
+            end
+            subgraph IAM["AWS IAM · account-wide"]
+                RR["Runtime execution role<br/>Memory · model · Gateway<br/>Image pull · logging"]
+                GR["Gateway execution role<br/>Invoke tool Lambda"]
+                LR["Lambda execution role<br/>Read runtime status<br/>Write logs"]
+            end
+        end
+        MODEL["AWS-managed inference<br/>Amazon Nova Lite<br/>EU destination Regions"]
+    end
 
-```bash
-cd chat
-uv python install 3.12
-uv sync --locked --managed-python
+    CLI <-->|"HTTPS · IAM-signed invocation"| RUNTIME
+    RUNTIME <-->|"Read history / save final turn"| MEMORY
+    RUNTIME <-->|"Converse · history + tools"| PROFILE
+    PROFILE <-->|"Cross-Region inference"| MODEL
+    RUNTIME <-->|"IAM-signed MCP · discovery / call"| GATEWAY
+    GATEWAY <-->|"Invoke with user-provided runtime ID"| TOOL
+    TOOL <-->|"GetAgentRuntime · runtime ID"| CONTROL
+    RUNTIME -->|"stdout / errors"| LOGS
+    TOOL -->|"Invocation logs / errors"| LOGS
+    RR -.->|"Assumed by Runtime"| RUNTIME
+    GR -.->|"Assumed by Gateway"| GATEWAY
+    LR -.->|"Assumed by Lambda"| TOOL
+
+    classDef local fill:#EFF6FF,stroke:#2563EB,color:#172554
+    classDef agentcore fill:#F3E8FF,stroke:#7C3AED,color:#3B0764
+    classDef memory fill:#ECFDF5,stroke:#059669,color:#064E3B
+    classDef compute fill:#FFF7ED,stroke:#EA580C,color:#7C2D12
+    classDef inference fill:#FDF2F8,stroke:#DB2777,color:#831843
+    classDef identity fill:#FAF5FF,stroke:#9333EA,color:#581C87
+    classDef logs fill:#F1F5F9,stroke:#64748B,color:#0F172A
+    class CLI local
+    class RUNTIME,GATEWAY,CONTROL agentcore
+    class MEMORY memory
+    class TOOL compute
+    class PROFILE,MODEL inference
+    class RR,GR,LR identity
+    class LOGS logs
+    style LOCAL fill:#F8FAFC,stroke:#94A3B8,color:#0F172A
+    style CLOUD fill:#FFFFFF,stroke:#475569,color:#0F172A
+    style ACCOUNT fill:#F8FAFC,stroke:#475569,color:#0F172A
+    style REGION fill:#FFFFFF,stroke:#0284C7,color:#0F172A
+    style AC fill:#FAF5FF,stroke:#A78BFA,color:#3B0764
+    style IAM fill:#FAF5FF,stroke:#C084FC,color:#581C87
+    linkStyle 0,1,2,3 stroke:#2563EB,stroke-width:2px
+    linkStyle 4,5,6 stroke:#0D9488,stroke-width:2px
+    linkStyle 7,8 stroke:#64748B,stroke-width:1.5px
+    linkStyle 9,10,11 stroke:#9333EA,stroke-width:1.5px
 ```
 
-For first-time setup, copy `.env.example` to `.env`. If `.env` already exists,
-edit it. Configure the local CLI with:
+The agent retrieves the conversation, discovers Gateway tools, and calls the
+model. If the model requests runtime status, the agent calls the tool and gives
+its result back to the model. Only the original user message and completed final
+reply are saved in Memory.
 
-```dotenv
-AWS_PROFILE=default
-AWS_REGION=eu-west-1
-AGENTCORE_RUNTIME_ARN=YOUR_DEPLOYED_RUNTIME_ARN
-```
+The status tool reads deployment readiness for a runtime ID supplied by the
+user. `READY` does not establish that chat, model access, or memory are healthy.
+The model runs on AWS-managed Bedrock infrastructure, outside the agent container.
 
-Then run from `chat/`:
+## Where to go next
 
-```bash
-uv run chat
-```
+| Directory | What it owns | Documentation |
+| --- | --- | --- |
+| `infra/` | CDK stack, resources, permissions, and deployment | [Setup, deploy, and cleanup](infra/README.md) |
+| `chat/` | Terminal CLI, agent, memory client, and Gateway client | [Configure, run, and verify chat](chat/README.md) |
+| `tools/` | Shared tools independent of the chat package | [Tool overview](tools/README.md) |
+| `tools/runtime_status/` | Runtime-status Lambda and Gateway schema | [Tool contract and packaging](tools/runtime_status/README.md) |
 
-From the repository root, the equivalent command is
-`uv run --directory chat chat`. The CLI has no configuration flags or direct
-Bedrock mode. It reads `.env` from its working directory without overriding
-existing shell variables. `AWS_REGION` must match your runtime's region.
+Start with `infra/` to deploy the application, then use `chat/` to talk to it.
+[AGENTS.md](AGENTS.md) contains the repository's implementation guidance for agents.
 
-`CHAT_MODEL`, `AWS_REGION`, `AGENTCORE_MEMORY_ID`, `CHAT_ACTOR_ID`, and
-`AGENTCORE_GATEWAY_URL` must be
-configured separately on the hosted runtime. Local `.env` values are not forwarded to AWS. See
-[chat setup and deployment](chat/README.md) for the configuration table,
-permissions, Gateway connection, and Docker/ECR deployment steps.
+## Conversation and data
 
-## Conversation behavior
+Follow-ups reuse a session ID. Saved events survive compute shutdown, and a
+conversation can be resumed by ID. New conversations select separate history.
+The CDK stack uses three-day event retention; destroying it deletes Memory and
+its conversation events.
 
-Type a message and receive a reply. Follow-ups reuse the same session ID and
-agent memory. `/new` starts a fresh conversation; `/exit`, Ctrl+C, or EOF quits.
-The CLI attempts to stop an invoked session on reset or exit. If cleanup fails,
-the old session can remain until its configured timeout.
-
-AgentCore Memory stores short-term conversation events beyond compute shutdown.
-Use `/session` to get the UUID and `/resume <UUID>` to restore that conversation.
-`/new` selects empty history without deleting older events. There is no automatic
-history trimming or long-term memory strategy. Very long conversations can exceed the inference
-model's context window. The CLI writes no transcript files; CloudWatch logs can
-still contain invocation payloads and errors. AWS calls incur normal charges.
-
-## Status and development
-
-The user verified the deployed text chat, AgentCore Memory, and runtime-status
-Gateway tool through `uv run chat` on 2026-10-04. That manual deployment was
-removed later the same day to start fresh with CDK. Runtime, Memory, Gateway,
-Lambda, the old ECR repository, and their experiment roles/policies are deleted.
-Their CloudWatch log groups and log-delivery records are also deleted. The shared
-CDK bootstrap repository was preserved.
-The user confirmed the CDK application deployed successfully on 2026-10-04.
-Live chat, memory, and Gateway acceptance checks for this deployment remain pending.
-
-The shared `get_runtime_status` tool accepts a runtime ID from your message.
-The model requests the tool through Gateway, Lambda reads the runtime's latest
-deployment status, and the agent explains the result. `READY` describes deployment
-readiness, not a health check of chat, memory, or model permissions.
-
-Keep the experiment small: text dialogue, short-term agent memory, and shared
-Gateway tools. There is no RAG, UI, summaries, or long-term memory. Automated test
-files remain deferred; use focused offline checks and report live AWS verification
-separately. The [chat README](chat/README.md) includes the agent acceptance checks.
-
-If you have the preserved local `voice/` directory, run it from the repository root:
-
-```bash
-uv run --directory voice brainstorm
-```
-
-Its local `voice/README.md` contains installation, audio requirements, manual
-checks, and remaining limitations. A fresh repository clone does not include it.
+This is a single-user prototype. It does not provide authorization between
+users, history trimming, or transcript export. Keep conversations short and use
+synthetic data: messages persist in AWS, CloudWatch can contain request text,
+and AWS calls incur charges.
