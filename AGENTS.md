@@ -33,12 +33,15 @@ instructions without a user request.
 selecting 3.12. Use uv-managed Python to avoid broken Homebrew links.
 Distribution: `agentcore-chat`; import package: `agent`. Do not reintroduce
 `agentcore_chat`. Console scripts are `chat = agent.cli:main` and
-`chat-runtime = agent.runtime:main`. The Dockerfile builds ARM64 Linux and serves
+`chat-runtime = agent.runtime:main`, and `chat-eval = agent.evaluate:main`.
+The Dockerfile builds ARM64 Linux and serves
 HTTP on port 8080. Do not add audio libraries or Swift dependencies.
 
 | Source | Responsibility and constraints |
 | --- | --- |
 | `chat/src/agent/cli.py` | Invoke `DEFAULT`, keep a UUID per conversation, `/new` / `/session` / `/resume` / `/exit`, close response bodies, and attempt remote session cleanup |
+| `chat/src/agent/evaluate.py` | Local LangSmith runner, multi-turn execution/session actions, three deterministic scores, and exit status |
+| `chat/src/agent/eval_cases.py` | Eight cases for greetings, fact recall/correction, isolation/resume, and runtime tools |
 | `chat/src/agent/runtime.py` | `BedrockAgentCoreApp`, require the context's session ID, and serialize invocations with a process lock |
 | `chat/src/agent/agent.py` | Run checkpointed LangChain `create_agent` with `ChatBedrockConverse` and return the final reply |
 | `chat/src/agent/middleware.py` | Validate responses before checkpoints, native four-call limit, and original-name tool reporting |
@@ -60,6 +63,23 @@ uses IAM authentication, resides in `AWS_REGION`, and requires Runtime-role
 `bedrock-agentcore:InvokeGateway` permission on its ARN.
 
 ### Behavior to preserve
+
+`uv run chat-eval` invokes the deployed Runtime with the same three CLI settings.
+Its target reuses `cli.invoke`, creates a fresh session per example, and always
+attempts cleanup. Keep its example dataset local and use `upload_results=False`
+with `Client(auto_batch_tracing=False)`; do not enable LangSmith uploads/tracing
+without a request. No LangSmith key or judge model is needed. Exit 0 only when
+every target succeeds and all three explicit scores pass; absent tool reports fail.
+Cases run sequentially (14 chat invocations for a successful suite). Derive the
+status-tool target ID from the configured Runtime ARN. Resume requires a
+successful intermediate stop before reselecting its UUID; final cleanup remains
+best effort. Text fragments/tool reports are limited regression checks, not
+semantic judgments or proof of tool arguments/results or process replacement.
+Print expected reply counts, per-turn expected/actual tool reports, and required
+or forbidden text fragments alongside scores. Display turn numbers starting at
+1; case definitions use zero-based indexes. Missing reports must stay distinct
+from empty tool lists.
+Evaluation checks are separate from the normal chat prompt and hosted workflow.
 
 LangChain owns model/tool orchestration. `CompletionGuard` validates Bedrock
 `stopReason` inside the async model-call wrapper before the model node can
@@ -189,5 +209,21 @@ The user confirmed successful CDK deployment on 2026-10-04 after configuring
 caller bootstrap-role permissions. The earlier manual verification does not
 establish that all CDK chat, persistence/resume, tool-error, and isolation
 acceptance checks passed; complete live acceptance remains pending.
-The LangChain/MCP/checkpoint migrations have offline verification only; their
-rebuilt Runtime has not been deployed or checked against live AWS.
+On 2026-10-06 the user ran the eight-case LangSmith suite against deployed
+Runtime version 2: greeting, recall, stop/resume recall, missing-runtime-ID,
+runtime status, and status follow-up passed. Correction failed: saved checkpoints
+contained both the correction and its acknowledgement, but the final reply asked
+for the code again. Isolation failed with a runtime 500; CloudWatch identified
+an empty visible model reply rejected by CompletionGuard, and the failed fresh
+session checkpoint contained only its own prompt. This does not establish an
+isolation leak. System-prompt instructions for corrections and missing context
+were clarified locally afterward; deployment and live verification of that
+change were subsequently verified by the user's second live evaluation: seven
+cases passed, including correction; isolation still failed. CloudWatch again
+reported no visible text. A direct Bedrock reproduction with the same synthetic
+prompt and tools enabled returned only a closed thinking block with end_turn;
+without tools it returned a visible answer. Explicit final-answer formatting
+instructions produced visible answers in direct Bedrock checks. Those latest
+instructions are local; Runtime redeployment and a full live suite rerun remain
+pending. Keep stripping thinking and rejecting empty answers; do not weaken
+guards or evaluation expectations to make these failures pass.

@@ -40,11 +40,12 @@ def create_conversation():
     return Conversation(runtime=runtime, runtime_arn=os.environ["AGENTCORE_RUNTIME_ARN"])
 
 
-def ask(conversation, prompt):
-    """Invoke the hosted agent, show its tool names, and return its final reply.
+def invoke(conversation, prompt):
+    """Invoke the hosted agent and return its reply/tool report as a dictionary.
 
     Mark the session before sending: a failed request may still start compute.
-    Always close the response stream, including when JSON parsing fails.
+    Always close the response stream, including when JSON parsing fails. Both
+    the terminal UI and evaluation runner use this request path.
     """
     conversation.invoked = True
     response = conversation.runtime.invoke_agent_runtime(
@@ -56,12 +57,17 @@ def ask(conversation, prompt):
     )
     body = response["response"]
     try:
-        result = json.loads(body.read())
-        for tool in result.get("tools_used", []):
-            print(f"Tool: {tool}")
-        return result["reply"]
+        return json.loads(body.read())
     finally:
         body.close()
+
+
+def ask(conversation, prompt):
+    """Show returned Gateway tool names and give the terminal loop its reply."""
+    result = invoke(conversation, prompt)
+    for tool in result.get("tools_used", []):
+        print(f"Tool: {tool}")
+    return result["reply"]
 
 
 def stop_session(conversation):

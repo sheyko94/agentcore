@@ -190,6 +190,8 @@ chain. Do not configure `AWS_PROFILE` on the hosted Runtime. The image excludes
 | File | Responsibility |
 | --- | --- |
 | `src/agent/cli.py` | Configuration, invocation, response closure, session commands, and error logging |
+| `src/agent/evaluate.py` | Local LangSmith runner, conversation execution, scoring, and exit status |
+| `src/agent/eval_cases.py` | Eight readable evaluation cases with per-turn expectations |
 | `src/agent/runtime.py` | SDK HTTP server and process lock around invocations |
 | `src/agent/agent.py` | Checkpointed LangChain agent and Bedrock model |
 | `src/agent/memory.py` | AgentCore checkpointer and session configuration |
@@ -210,8 +212,9 @@ and start a new session. Publishing an image alone does not update the Runtime.
 Start with the request path rather than the framework internals:
 
 1. `cli.main` loads local configuration. `run_conversation` reads input,
-   `handle_session_command` handles slash commands, and `cli.ask` sends messages
-   to AWS. `Conversation` holds the selected session ID and cleanup state.
+   `handle_session_command` handles slash commands, and `cli.ask` displays the
+   result from `cli.invoke`, the shared AWS request function. `Conversation`
+   holds the selected session ID and cleanup state.
 2. `runtime.invoke` receives the message and session ID, validates them, and
    calls `Chat.ask` under the process lock.
 3. `Chat.ask` bridges the synchronous Runtime handler to async `_ask`.
@@ -242,6 +245,101 @@ Validation and cleanup are kept explicit because they determine what is saved,
 which tools execute, and whether connections or remote sessions remain open.
 
 ## Verify the deployed application
+
+### Run the evaluation suite
+
+From `chat/`, using the same `.env` or shell configuration as the CLI:
+
+```bash
+uv sync --locked --managed-python
+uv run chat-eval
+```
+
+This runs eight cases sequentially against the deployed `DEFAULT` endpoint:
+14 chat requests in a successful full run, plus session-stop requests. It calls
+AWS and incurs normal charges. Each case starts with a fresh session UUID and
+uses synthetic facts. Tool cases derive the real runtime ID from your configured
+`AGENTCORE_RUNTIME_ARN`; no additional environment variables are needed.
+
+| Case | Conversation and expectation |
+| --- | --- |
+| `basic_greeting` | A greeting produces a non-empty reply without tools |
+| `remembers_fact` | A second turn recalls the synthetic project code from the first |
+| `corrects_fact` | After a correction, the third turn contains the new code and excludes the old one |
+| `isolates_sessions` | After selecting a new UUID, the reply excludes the first session's code |
+| `resumes_saved_fact` | After a successful stop request and selecting the saved UUID, a follow-up recalls its code |
+| `missing_runtime_id` | With no runtime ID, the reply contains “runtime ID” and calls no tools |
+| `runtime_status` | An explicit status request reports one `get_runtime_status` call and repeats the supplied ID |
+| `runtime_status_followup` | Both turns report one status-tool call; the second prompt relies on the first turn's runtime ID |
+
+The LangSmith SDK runs each example through `invoke_chat`, then applies three
+ordinary Python evaluators to the complete conversation:
+
+| Score | Pass condition |
+| --- | --- |
+| `has_replies` | Expected turn count and non-empty reply text on every turn |
+| `expected_tools` | Every turn's reported tool sequence matches the example; missing reports fail |
+| `expected_text` | Required fragments appear and forbidden fragments are absent, ignoring case |
+
+Example output (reply wording can vary):
+
+```text
+PASS remembers_fact
+  has_replies: PASS
+    Expected: 2 turns, each with a non-empty reply
+    Actual: 2 returned turns, 2 non-empty replies
+  expected_tools: PASS
+    Turn 1: expected []; actual []
+    Turn 2: expected []; actual []
+  expected_text: PASS
+    Turn 2: must contain ['BLUE_KITE_42']
+    Turn 2: must exclude []
+    Turn 2: actual reply 'BLUE_KITE_42'
+  Last reply: BLUE_KITE_42
+...
+8/8 cases passed
+```
+
+Scores include expected and actual values. Displayed turn numbers start at 1;
+case definitions use indexes starting at 0. Empty tool lists mean no calls;
+`None` means no report was returned. Expected tools use short aliases, while
+actual reports show the full Gateway names; scoring ignores the Gateway prefix.
+Text expectations are fragments, not exact full-response matches.
+
+The command exits with 0 only when every case and score passes; otherwise it
+exits with 1. Request errors fail their case, are recorded in the working
+directory's `error.log`, and do not stop later cases. Response streams close and
+final runtime cleanup is attempted even after request/parsing failures. Final
+cleanup is best effort, like the CLI. The resume case additionally requires its
+intermediate stop request to succeed. Stops preserve Memory checkpoints; the
+synthetic evaluation conversations remain subject to Memory retention.
+
+These are targeted regression checks, not a semantic judge. In particular,
+excluding a code does not prove a truthful isolation answer, mentioning “runtime ID” does
+not prove a helpful clarification, and a reported tool call does not verify its
+arguments or successful result. An accepted stop request does not prove a new
+worker process was started. Check those details through the manual acceptance
+checks below. Text checks can flag a valid response with unexpected wording;
+inspect the final reply before deciding whether behavior or expectations need
+changing.
+
+The dataset, results, and traces stay local: experiment uploads and background
+trace uploading are disabled. No LangSmith API key, account, or judge model is
+required. The SDK may print a beta warning for its local-results option.
+
+For learning, read `eval_cases.py` first: each example pairs prompts with expected
+behavior. In `evaluate.py`, `invoke_chat` sends those prompts and manages the
+session, the three evaluators compare actual output to expectations, and
+`run_evaluation`/`main` run the suite and print scores. To add a case, append one
+input/expectation pair in `eval_cases.py`; keep one expected tool list per prompt.
+`contains` and `excludes` use zero-based turn indexes. Optional `session_action`
+is `new` or `resume` and applies just before the final prompt of a multi-turn case.
+
+The suite evaluates whichever Runtime version is deployed. Local hosted-code
+edits require CDK redeployment before this command can assess them. Adding or
+changing these local evaluation files alone requires no cloud deployment.
+
+### Manual acceptance checks
 
 These checks call AWS and incur charges. Use `uv run chat` after deployment:
 
@@ -321,6 +419,7 @@ The local HTTP server is a diagnostic entry point; `uv run chat` remains the
 normal interface for checking the deployed agent.
 
 References: [AgentCore checkpoint integration](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/memory-integrate-lang.html),
+[LangSmith local evaluations](https://docs.langchain.com/langsmith/local),
 [LangChain MCP](https://docs.langchain.com/oss/python/langchain/mcp),
 [Runtime permissions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html),
 [LangChain agents](https://docs.langchain.com/oss/python/langchain/agents),

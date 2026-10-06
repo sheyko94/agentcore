@@ -17,11 +17,13 @@ dependencies = [
   "fastmcp>=4,<5",
   "httpx2>=2,<3",
   "anyio>=4,<5",
+  "langsmith>=0.14,<1",
 ]
 
 [project.scripts]
 chat = "agent.cli:main"
 chat-runtime = "agent.runtime:main"
+chat-eval = "agent.evaluate:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent"]

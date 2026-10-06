@@ -19,6 +19,7 @@ dependencies = [
     { name = "langchain", extra = ["mcp"] },
     { name = "langchain-aws" },
     { name = "langgraph-checkpoint-aws" },
+    { name = "langsmith" },
     { name = "python-dotenv" },
 ]
 
@@ -32,6 +33,7 @@ requires-dist = [
     { name = "langchain", extras = ["mcp"], specifier = ">=1.4,<2" },
     { name = "langchain-aws", specifier = ">=1,<2" },
     { name = "langgraph-checkpoint-aws", specifier = ">=1,<2" },
+    { name = "langsmith", specifier = ">=0.14,<1" },
     { name = "python-dotenv", specifier = ">=1.2,<2" },
 ]
 
